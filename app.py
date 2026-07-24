@@ -10,7 +10,6 @@ from google import genai
 def cari_dari_berbagai_sumber(kata_kunci):
     try:
         links = []
-        # Mencari tautan dari internet menggunakan DuckDuckGo
         with DDGS() as ddgs:
             results = [r for r in ddgs.text(kata_kunci, region="id-id", max_results=4)]
             for r in results:
@@ -31,37 +30,38 @@ def ambil_teks_dari_url(url):
         response = requests.get(url, headers=headers, timeout=7)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Buang elemen sampah seperti iklan, navigasi, dan footer
         for elemen in soup(['script', 'style', 'header', 'footer', 'nav', 'aside', 'form']):
             elemen.decompose()
             
         paragraf = [p.get_text() for p in soup.find_all('p') if len(p.get_text().strip()) > 30]
         teks_bersih = " ".join(" ".join(paragraf).split())
-        return teks_bersih[:1200] # Batasi panjang teks per artikel agar optimal
+        return teks_bersih[:1200]
     except Exception:
         return ""
 
 # ==========================================
-# 3. FUNGSI AI DENGAN MULTI-MODEL CADANGAN
+# 3. FUNGSI AI DENGAN FITUR LAPORAN & TIMELINE
 # ==========================================
-def analisis_multi_sumber_ai(gabungan_teks, topik):
+def analisis_dengan_timeline_ai(sumber_data, topik):
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         client = genai.Client(api_key=api_key)
         
+        teks_terstruktur = ""
+        for idx, item in enumerate(sumber_data, 1):
+            teks_terstruktur += f"[{idx}] Judul: {item['title']} | URL: {item['url']}\nIsi:\n{item['teks']}\n\n"
+        
         prompt = f"""
-        Kamu adalah asisten riset profesional. Berdasarkan beberapa sumber referensi web di bawah ini mengenai topik '{topik}', 
-        buatkan laporan riset komprehensif dalam Bahasa Indonesia yang mencakup:
-        1. Ringkasan Utama dari berbagai sumber.
-        2. Persamaan pandangan antar sumber.
-        3. Perbedaan atau sudut pandang unik yang ditemukan.
-        Gunakan format poin-poin yang terstruktur rapi.
+        Kamu adalah asisten riset profesional. Berdasarkan sumber-sumber di bawah ini mengenai topik '{topik}', 
+        buatkan dua hal dalam Bahasa Indonesia:
+        
+        1. **LAPORAN UTAMA DENGAN SITASI**: Rangkuman komprehensif berformat poin-poin dengan menyertakan nomor referensi sumber seperti [1], [2] pada klaim penting.
+        2. **KRONOLOGI WAKTU (TIMELINE)**: Ekstrak tahun-tahun penting beserta peristiwa kuncinya dari teks sumber, lalu susun secara berurutan dari masa lampau ke masa kini dengan format visual sederhana (Contoh: **Tahun** — Peristiwa). Jika topik tidak memiliki unsur waktu/sejarah yang jelas, buat ringkasan tonggak pencapaian utamanya.
 
         SUMBER REFERENSI:
-        {gabungan_teks}
+        {teks_terstruktur}
         """
         
-        # Daftar model prioritas (Model Utama -> Model Cadangan)
         daftar_model = ['gemini-2.5-flash', 'gemini-3.1-flash-lite']
         
         for nama_model in daftar_model:
@@ -82,56 +82,62 @@ def analisis_multi_sumber_ai(gabungan_teks, topik):
         return f"Terjadi kesalahan: {e}", None
 
 # ==========================================
-# 4. TAMPILAN ANTARMUKA STREAMLIT (TAHAP 2)
+# 4. TAMPILAN ANTARMUKA STREAMLIT (TAHAP 4)
 # ==========================================
-st.set_page_config(page_title="Multi-Source AI Researcher", page_icon="🌐")
+st.set_page_config(page_title="AI Research Assistant - Timeline", page_icon="⏳")
 
-st.title("🌐 Mesin Riset Multi-Sumber (Tahap 2)")
-st.caption("Pencarian Berbagai Situs Web + Analisis Perbandingan AI")
+st.title("⏳ Mesin Riset + Lini Masa Otomatis (Tahap 4)")
+st.caption("Analisis Multi-Sumber, Sitasi Otomatis, dan Kronologi Peristiwa")
 
-query = st.text_input("Masukkan topik riset (contoh: AI Indonesia, Perkembangan BUMDes, dll):")
+query = st.text_input("Masukkan topik riset (contoh: Sejarah Kerajaan Majapahit, Sejarah Internet Indonesia, dll):")
 
-if st.button("Mulai Riset Multi-Sumber"):
+if st.button("Mulai Riset & Buat Timeline"):
     if query.strip():
-        with st.status("Sedang mengumpulkan data dari internet...", expanded=True) as status:
-            st.write("🔍 Mencari referensi dari berbagai situs web...")
+        with st.status("Sedang mengumpulkan & menganalisis data...", expanded=True) as status:
+            st.write("🔍 Mencari sumber terpercaya di internet...")
             sumber_list = cari_dari_berbagai_sumber(query)
             
             if not sumber_list:
                 status.update(label="Tidak ada sumber ditemukan.", state="error")
                 st.stop()
                 
-            st.write(f"✅ Menemukan {len(sumber_list)} sumber web relevan.")
+            st.write(f"✅ Menemukan {len(sumber_list)} sumber web.")
             
-            gabungan_teks_total = ""
-            sumber_berhasil = []
-            
+            sumber_data_lengkap = []
             for idx, item in enumerate(sumber_list, 1):
-                st.write(f"📥 Mengekstrak: {item['title']} ({item['url']})")
+                st.write(f"📥 Mengekstrak sumber [{idx}]: {item['title']}")
                 teks = ambil_teks_dari_url(item['url'])
                 if teks:
-                    gabungan_teks_total += f"--- SUMBER {idx}: {item['title']} ({item['url']}) ---\n{teks}\n\n"
-                    sumber_berhasil.append(item['url'])
+                    sumber_data_lengkap.append({
+                        'id': idx,
+                        'title': item['title'],
+                        'url': item['url'],
+                        'teks': teks
+                    })
             
-            st.write("🧠 Menganalisis persamaan & perbedaan dengan Gemini AI...")
-            hasil_analisis, model_pakai = analisis_multi_sumber_ai(gabungan_teks_total, query)
+            if not sumber_data_lengkap:
+                status.update(label="Gagal mengambil isi teks artikel.", state="error")
+                st.stop()
+                
+            st.write("🧠 Menganalisis laporan dan menyusun linimasa kronologis dengan Gemini AI...")
+            hasil_analisis, model_pakai = analisis_dengan_timeline_ai(sumber_data_lengkap, query)
             
             if model_pakai:
                 st.write(f"✨ Diproses menggunakan model: `{model_pakai}`")
                 
-            status.update(label="Riset multi-sumber selesai!", state="complete", expanded=False)
+            status.update(label="Riset selesai!", state="complete", expanded=False)
             
-        if gabungan_teks_total:
-            st.subheader(f"📊 Laporan Riset & Perbandingan: {query}")
-            st.markdown(hasil_analisis)
+        st.subheader(f"📊 Hasil Analisis & Timeline: {query}")
+        st.markdown(hasil_analisis)
+        
+        st.markdown("---")
+        st.subheader("📚 Daftar Pustaka / Referensi")
+        for item in sumber_data_lengkap:
+            st.markdown(f"**[{item['id']}]** [{item['title']}]({item['url']})")
             
-            st.markdown("### 🔗 Daftar Referensi Sumber:")
-            for url in sumber_berhasil:
-                st.markdown(f"- {url}")
-                
-            with st.expander("Lihat Teks Mentah Gabungan"):
-                st.text_area("Teks Sumber:", value=gabungan_teks_total, height=300)
-        else:
-            st.warning("Gagal mengekstrak isi teks dari situs web yang ditemukan.")
+        with st.expander("Lihat Data Mentah Sumber"):
+            for item in sumber_data_lengkap:
+                st.write(f"**Sumber [{item['id']}]**: {item['url']}")
+                st.text_area(f"Teks {item['id']}", value=item['teks'], height=150, key=f"raw_{item['id']}")
     else:
         st.warning("Ketikkan topik pencarian terlebih dahulu!")
