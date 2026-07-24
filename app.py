@@ -2,12 +2,14 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
-from google import genai
 from urllib.parse import urlparse
 from difflib import SequenceMatcher
 import io
 import re
 from collections import defaultdict
+
+# Impor modul AI yang sudah dipisahkan
+from gemini import penulis_profesional_ai, jawab_pertanyaan_chat
 
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -103,7 +105,7 @@ def filter_relevansi_dan_duplikat(sumber_mentah, kata_kunci):
     return sumber_terfilter[:5]
 
 # ==========================================
-# 2. QUESTION PLANNER ENGINE (AGENTIC DECONSTRUCTION)
+# 2. PYTHON RESEARCH ENGINES
 # ==========================================
 def pecah_menjadi_atomic_claims(kalimat):
     titik_pecah = re.split(r',|\bsetelah\b|\bsebelum\b|\bdimana\b|\bketika\b|\bserta\b|\bdan juga\b', kalimat)
@@ -196,11 +198,6 @@ def proses_peneliti_python(url, kata_kunci, source_id):
         return "", [], [], {}, [], [], 50, "Cukup"
 
 def build_question_planner_blueprint(query, sumber_data_lengkap):
-    """
-    Question Planner Engine (Python): Memecah pertanyaan pengguna menjadi sub-pertanyaan strategis
-    (Politik, Ekonomi, Militer, Perdagangan, Agama/Sosial) dan mencocokkan klaim yang relevan.
-    """
-    # 1. Buat Rencana Berpikir (Sub-Pertanyaan Standar Agen)
     sub_questions = [
         {"domain": "Politik & Kekuasaan", "keyword": ["politik", "raja", "tahta", "pemerintahan", "kekuasaan", "konflik", "saudara"]},
         {"domain": "Ekonomi & Keuangan", "keyword": ["ekonomi", "pajak", "keuangan", "kesejahteraan", "pendapatan"]},
@@ -208,22 +205,14 @@ def build_question_planner_blueprint(query, sumber_data_lengkap):
         {"domain": "Perdagangan & Maritim", "keyword": ["perdagangan", "pelabuhan", "maritim", "nusantara", "komoditas"]},
         {"domain": "Sosial, Agama & Budaya", "keyword": ["agama", "sosial", "budaya", "hindu", "buddha", "islam", "masyarakat"]}
     ]
-    
     blueprint = []
     for sq in sub_questions:
         matched_claims = []
         for item in sumber_data_lengkap:
             for claim in item['claims']:
-                claim_lower = claim.lower()
-                if any(kw in claim_lower for kw in sq['keyword']):
+                if any(kw in claim.lower() for kw in sq['keyword']):
                     matched_claims.append((item['id'], claim))
-                    
-        # Ambil maksimal 3 klaim relevan per sub-pertanyaan
-        blueprint.append({
-            'domain': sq['domain'],
-            'matched_claims': matched_claims[:3]
-        })
-        
+        blueprint.append({'domain': sq['domain'], 'matched_claims': matched_claims[:3]})
     return blueprint
 
 def hitung_statistik_riset(sumber_data):
@@ -235,88 +224,12 @@ def hitung_statistik_riset(sumber_data):
     return confidence, rata_trust, len(sumber_data), consensus
 
 # ==========================================
-# 3. PENULIS PROFESIONAL AI (QUESTION PLANNER MODE)
-# ==========================================
-def penulis_profesional_ai(planner_blueprint, causal_chains, timeline_global, global_entities, global_triples, topik, confidence):
-    try:
-        api_key = st.secrets["GEMINI_API_KEY"]
-        client = genai.Client(api_key=api_key)
-        
-        planner_teks = ""
-        for bp in planner_blueprint:
-            planner_teks += f"### Dimensi: {bp['domain']}\n"
-            if bp['matched_claims']:
-                for src_id, clm in bp['matched_claims']:
-                    planner_teks += f"  - Fakta: \"{clm}\" [{src_id}]\n"
-            else:
-                planner_teks += "  - (Fakta umum terintegrasi dalam narasi kronologis)\n"
-            planner_teks += "\n"
-            
-        causal_teks = "\n".join([f"- **{sebab}** $\rightarrow$ *({marker})* $\rightarrow$ **{akibat}**" for sebab, marker, akibat in causal_chains[:8]])
-        timeline_teks = "\n".join([f"- {ket}" for _, ket in timeline_global[:10]])
-        triples_teks = "\n".join([f"- [{sub}] --({rel})--> [{obj}]" for sub, rel, obj in global_triples[:8]])
-        
-        prompt = f"""
-        Kamu adalah Penulis Profesional. Python telah menjalankan Question Planner Engine (Agen Perencanaan Berpikir) yang memecah topik '{topik}' ke dalam sub-pertanyaan multidimensi beserta klaim terarahnya.
-        Berdasarkan cetak biru perencanaan Python (Confidence Score: {confidence}%), susun laporan riset yang sangat mendalam, terstruktur, dan tuntas dalam Bahasa Indonesia dengan format:
-
-        1. **CETAK BIRU PERENCANAAN PIKIRAN (QUESTION PLANNER BLUEPRINT)**: Sajikan analisis sub-dimensi yang telah disiapkan Python:
-           {planner_teks}
-
-        2. **POHON SEBAB-AKIBAT (CAUSAL CHAINS)**: 
-           {causal_teks if causal_teks else "- Analisis kausal terverifikasi."}
-
-        3. **KNOWLEDGE GRAPH & ENTITAS UTAMA**: 
-           - Tokoh: {', '.join(global_entities.get('Tokoh', []))}
-           - Lokasi: {', '.join(global_entities.get('Lokasi', []))}
-           - Organisasi: {', '.join(global_entities.get('Organisasi', []))}
-           - Tanggal / Tahun: {', '.join(global_entities.get('Tanggal', []))}
-           - Relasi: {triples_teks}
-
-        4. **KRONOLOGI WAKTU**: 
-           {timeline_teks}
-
-        5. **RINGKASAN EKSEKUTIF & JAWABAN ANALITIS UTAMA**: Rangkai seluruh sub-pertanyaan dan bukti di atas menjadi laporan profesional yang menjawab tuntas inti pertanyaan pengguna.
-        """
-        
-        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
-        return response.text, 'gemini-2.5-flash'
-    except Exception as e:
-        return f"Kesalahan: {e}", None
-
-def jawab_pertanyaan_chat(user_prompt, planner_blueprint, causal_chains, timeline_global, laporan_utama):
-    try:
-        api_key = st.secrets["GEMINI_API_KEY"]
-        client = genai.Client(api_key=api_key)
-        
-        bp_p = ""
-        for bp in planner_blueprint:
-            bp_p += f"[{bp['domain']}]: " + "; ".join([c[1] for c in bp['matched_claims']]) + "\n"
-            
-        prompt = f"""
-        Kamu adalah asisten riset cerdas berbekal Question Planner Engine. Jawab pertanyaan pengguna secara analitis berdasarkan cetak biru sub-pertanyaan Python:
-        
-        CETAK BIRU PERENCANAAN:
-        {bp_p}
-        
-        LAPORAN UTAMA:
-        {laporan_utama}
-        
-        PERTANYAAN:
-        {user_prompt}
-        """
-        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
-        return response.text
-    except Exception as e:
-        return f"Kesalahan: {e}"
-
-# ==========================================
 # 4. EKSPOR DOKUMEN & UI STREAMLIT
 # ==========================================
 def generate_pdf(topik, skor, consensus, rata_skor, total_sumber, hasil_analisis, sumber_list):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-    story = [Paragraph(f"LAPORAN QUESTION PLANNER ENGINE: {topik.upper()}", ParagraphStyle('T', fontSize=16, textColor=colors.HexColor("#1E3A8A"))), Spacer(1, 10)]
+    story = [Paragraph(f"LAPORAN QUESTION PLANNER: {topik.upper()}", ParagraphStyle('T', fontSize=16, textColor=colors.HexColor("#1E3A8A"))), Spacer(1, 10)]
     for para in hasil_analisis.split("\n"):
         if para.strip():
             story.append(Paragraph(para, ParagraphStyle('N', fontSize=10, leading=14)))
@@ -326,22 +239,22 @@ def generate_pdf(topik, skor, consensus, rata_skor, total_sumber, hasil_analisis
 
 def generate_docx(topik, skor, consensus, rata_skor, total_sumber, hasil_analisis, sumber_list):
     doc = Document()
-    doc.add_heading(f"Laporan Question Planner Engine: {topik}", level=1)
+    doc.add_heading(f"Laporan Question Planner: {topik}", level=1)
     doc.add_paragraph(hasil_analisis)
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
     return buffer.getvalue()
 
-st.set_page_config(page_title="AI Researcher - Question Planner", page_icon="🧭")
-st.title("🧭 Mesin Riset + Question Planner Engine (Mesin Inti 5 - Final)")
-st.caption("Python Menyusun Cetak Biru Berpikir (Sub-Pertanyaan Multidimensi) Sebelum Disusun oleh Gemini")
+st.set_page_config(page_title="AI Researcher - Modular Engine", page_icon="🧭")
+st.title("🧭 Mesin Riset Modular + Question Planner Engine")
+st.caption("Python Memproses Data Riset -> gemini.py Menangani AI dengan Sistem Fallback Model Otomatis")
 
-query = st.text_input("Masukkan topik riset (contoh: Mengapa Majapahit runtuh?, Dampak AI bagi Pendidikan, dll):")
+query = st.text_input("Masukkan topik riset (contoh: Mengapa Majapahit runtuh?, dll):")
 
-if st.button("Jalankan Riset dengan Question Planner"):
+if st.button("Jalankan Riset Modular"):
     if query.strip():
-        with st.status("Menjalankan Question Planner Agent & Peneliti Python...", expanded=True) as status:
+        with st.status("Menjalankan Peneliti Python & Gemini AI...", expanded=True) as status:
             st.write("🔍 Mencari sumber relevan...")
             sumber_mentah = cari_sumber_mentah(query)
             if not sumber_mentah:
@@ -378,16 +291,21 @@ if st.button("Jalankan Riset dengan Question Planner"):
             global_triples = list(set(global_triples))
             causal_chains_global = list(set(causal_chains_global))
             
-            st.write("🧭 Menyusun Question Planner Blueprint (Agentic Deconstruction)...")
+            st.write("🧭 Menyusun Question Planner Blueprint...")
             planner_blueprint = build_question_planner_blueprint(query, sumber_data_lengkap)
             timeline_global = sorted(list(set(timeline_global)), key=lambda x: x[0])
             
             score_akhir, rata_skor_trust, total_sumber, consensus_score = hitung_statistik_riset(sumber_data_lengkap)
             
-            st.write("✍️ Penulis Profesional AI menyusun laporan berdasarkan cetak biru...")
-            hasil_analisis, model_pakai = penulis_profesional_ai(planner_blueprint, causal_chains_global, timeline_global, global_entities, global_triples, query, score_akhir)
+            st.write("✍️ Memanggil modul gemini.py untuk menyusun laporan...")
+            hasil_analisis, model_pakai = penulis_profesional_ai(
+                planner_blueprint, causal_chains_global, timeline_global, global_entities, global_triples, query, score_akhir
+            )
             
-            status.update(label="Question Planner Selesai!", state="complete", expanded=False)
+            if model_pakai:
+                st.write(f"✨ Berhasil menggunakan model: `{model_pakai}`")
+            
+            status.update(label="Riset Selesai!", state="complete", expanded=False)
             
         st.session_state['hasil_analisis'] = hasil_analisis
         st.session_state['sumber_data_lengkap'] = sumber_data_lengkap
@@ -401,7 +319,7 @@ if st.button("Jalankan Riset dengan Question Planner"):
         st.session_state['total_sumber'] = total_sumber
         st.session_state['consensus_score'] = consensus_score
         st.session_state['query'] = query
-        st.session_state['messages'] = [{"role": "assistant", "content": f"Laporan Question Planner untuk **{query}** berhasil disusun."}]
+        st.session_state['messages'] = [{"role": "assistant", "content": f"Laporan untuk **{query}** berhasil disusun."}]
 
 if 'hasil_analisis' in st.session_state:
     st.markdown("---")
@@ -424,12 +342,12 @@ if 'hasil_analisis' in st.session_state:
     docx_bytes = generate_docx(st.session_state['query'], st.session_state['score_akhir'], st.session_state['consensus_score'], st.session_state['rata_skor_trust'], st.session_state['total_sumber'], st.session_state['hasil_analisis'], st.session_state['sumber_data_lengkap'])
     
     with col_pdf:
-        st.download_button("📄 Unduh PDF", data=pdf_bytes, file_name=f"Planner_{st.session_state['query'].replace(' ', '_')}.pdf", mime="application/pdf")
+        st.download_button("📄 Unduh PDF", data=pdf_bytes, file_name=f"Riset_{st.session_state['query'].replace(' ', '_')}.pdf", mime="application/pdf")
     with col_docx:
-        st.download_button("📝 Unduh Word", data=docx_bytes, file_name=f"Planner_{st.session_state['query'].replace(' ', '_')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        st.download_button("📝 Unduh Word", data=docx_bytes, file_name=f"Riset_{st.session_state['query'].replace(' ', '_')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
     st.markdown("---")
-    st.subheader(f"📊 Laporan Riset Question Planner Engine: {st.session_state['query']}")
+    st.subheader(f"📊 Laporan Riset: {st.session_state['query']}")
     st.markdown(st.session_state['hasil_analisis'])
 
     with st.expander("🧭 Lihat Cetak Biru Berpikir Python (Question Planner Blueprint)"):
@@ -454,7 +372,13 @@ if 'hasil_analisis' in st.session_state:
             st.markdown(user_prompt)
         with st.chat_message("assistant"):
             with st.spinner("Menyusun jawaban agen..."):
-                jawaban = jawab_pertanyaan_chat(user_prompt, st.session_state['planner_blueprint'], st.session_state['causal_chains_global'], st.session_state['timeline_global'], st.session_state['hasil_analisis'])
+                jawaban = jawab_pertanyaan_chat(
+                    user_prompt, 
+                    st.session_state['planner_blueprint'], 
+                    st.session_state['causal_chains_global'], 
+                    st.session_state['timeline_global'], 
+                    st.session_state['hasil_analisis']
+                )
                 st.markdown(jawaban)
                 st.session_state["messages"].append({"role": "assistant", "content": jawaban})
 
