@@ -1,0 +1,5 @@
+streamlit
+duckduckgo_search
+trafilatura
+deep-translator
+huggingface_hub
