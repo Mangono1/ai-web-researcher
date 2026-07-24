@@ -2,9 +2,10 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
+from google import genai
 
 # ==========================================
-# 1. FUNGSI PENCARIAN DUCKDUCKGO (TANPA API KEY)
+# 1. FUNGSI PENCARIAN DUCKDUCKGO
 # ==========================================
 def cari_di_web(kata_kunci):
     try:
@@ -19,7 +20,7 @@ def cari_di_web(kata_kunci):
         return []
 
 # ==========================================
-# 2. FUNGSI EKSTRAKSI TEKS WEB (BEAUTIFULSOUP)
+# 2. FUNGSI EKSTRAKSI TEKS WEB
 # ==========================================
 def ambil_teks_artikel(url):
     headers = {
@@ -39,40 +40,72 @@ def ambil_teks_artikel(url):
         return ""
 
 # ==========================================
-# 3. TAMPILAN ANTARMUKA STREAMLIT
+# 3. FUNGSI PERANGKUM AI (GEMINI)
 # ==========================================
-st.set_page_config(page_title="Asisten Riset Web", page_icon="🔍")
+def rangkum_dengan_ai(teks_kumpul, topik):
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        client = genai.Client(api_key=api_key)
+        
+        prompt = f"""
+        Kamu adalah asisten riset yang profesional. Berdasarkan teks referensi dari web di bawah ini tentang topik '{topik}', 
+        buatkan ringkasan komprehensif, terstruktur, dan mudah dipahami dalam Bahasa Indonesia. 
+        Gunakan poin-poin penting agar informatif.
 
-st.title("🔍 Asisten Riset Otomatis")
-st.caption("Pencarian Web Otomatis + Ekstraksi Teks (Tanpa API Key!)")
+        TEKS REFERENSI:
+        {teks_kumpul[:4000]}
+        """
+        
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        return response.text
+    except KeyError:
+        return "⚠️ GEMINI_API_KEY belum diatur di Streamlit Secrets."
+    except Exception as e:
+        return f"Terjadi kesalahan saat memanggil AI: {e}"
 
-query = st.text_input("Masukkan topik atau pertanyaan pencarian:")
+# ==========================================
+# 4. TAMPILAN ANTARMUKA STREAMLIT
+# ==========================================
+st.set_page_config(page_title="Asisten Riset AI", page_icon="🤖")
 
-if st.button("Mulai Cari & Ekstrak"):
+st.title("🤖 Asisten Riset & Perangkum AI")
+st.caption("Pencarian Web + Ekstraksi + Ringkasan Pintar Gemini")
+
+query = st.text_input("Masukkan topik atau pertanyaan riset:")
+
+if st.button("Mulai Riset & Rangkum"):
     if query.strip():
-        with st.status("Sedang memproses...", expanded=True) as status:
-            st.write("🔍 Mencari referensi terbaik di internet...")
+        with st.status("Sedang memproses riset...", expanded=True) as status:
+            st.write("🔍 Mencari referensi di internet...")
             links = cari_di_web(query)
             
             if not links:
                 status.update(label="Tidak ada hasil ditemukan.", state="error")
                 st.stop()
                 
-            st.write(f"✅ Berhasil menemukan {len(links)} URL artikel.")
+            st.write(f"✅ Menemukan {len(links)} sumber web.")
             
             hasil_ekstraksi = ""
             for idx, link in enumerate(links, 1):
-                st.write(f"📥 Mengambil isi teks dari artikel {idx}: {link}")
+                st.write(f"📥 Mengekstrak artikel {idx}: {link}")
                 teks = ambil_teks_artikel(link)
                 if teks:
-                    hasil_ekstraksi += f"=== SUMBER {idx}: {link} ===\n"
-                    hasil_ekstraksi += f"{teks[:1200]}...\n\n"
+                    hasil_ekstraksi += f"Sumber: {link}\n{teks}\n\n"
             
-            status.update(label="Proses ekstraksi selesai!", state="complete", expanded=False)
+            st.write("🧠 Menganalisis dan merangkum dengan Gemini AI...")
+            ringkasan_ai = rangkum_dengan_ai(hasil_ekstraksi, query)
+            
+            status.update(label="Riset selesai!", state="complete", expanded=False)
             
         if hasil_ekstraksi:
-            st.subheader("📑 Hasil Ekstraksi Teks")
-            st.text_area("Teks bersih yang siap diringkas:", value=hasil_ekstraksi, height=350)
+            st.subheader("💡 Hasil Ringkasan AI")
+            st.markdown(ringkasan_ai)
+            
+            with st.expander("Lihat Teks Mentah dari Web"):
+                st.text_area("Sumber Mentah:", value=hasil_ekstraksi, height=300)
         else:
             st.warning("Gagal mengambil teks dari artikel yang ditemukan.")
     else:
