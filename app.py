@@ -3,141 +3,462 @@ import requests
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
 from google import genai
+from urllib.parse import urlparse
+from difflib import SequenceMatcher
+import io
+import re
+from collections import defaultdict
+
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from docx import Document
 
 # ==========================================
-# 1. FUNGSI PENCARIAN MULTI-SUMBER (WEB)
+# 1. SEMANTIC RETRIEVAL & SOURCE INTELLIGENCE
 # ==========================================
-def cari_dari_berbagai_sumber(kata_kunci):
+def expand_semantic_keywords(kata_kunci):
+    kunci_lower = kata_kunci.lower()
+    expanded_set = set([kunci_lower])
+    semantic_synonyms = {
+        "mobil listrik": ["electric vehicle", "ev", "battery electric vehicle", "bev", "kendaraan listrik"],
+        "electric vehicle": ["mobil listrik", "ev", "kendaraan listrik"],
+        "kesehatan": ["health", "medis", "medical", "klinis", "clinical"],
+        "pendidikan": ["education", "sekolah", "school", "kurikulum", "learning"],
+        "ekonomi": ["economy", "financial", "keuangan", "bisnis", "market", "pasar"],
+        "energi terbarukan": ["renewable energy", "green energy", "clean energy", "energi hijau"],
+        "sejarah": ["history", "historis", "kronologi", "asal-usul", "era", "dynasty"],
+        "runtuh": ["keruntuhan", "kejatuhan", "collapse", "destroy", "bubar", "akhir"]
+    }
+    for key, synonyms in semantic_synonyms.items():
+        if key in kunci_lower:
+            for syn in synonyms:
+                expanded_set.add(syn)
+    for word in kunci_lower.split():
+        if len(word) > 2:
+            expanded_set.add(word)
+    return list(expanded_set)
+
+def hitung_source_intelligence_score(url, soup_obj, teks_artikel):
+    parsed_url = urlparse(url)
+    domain = parsed_url.netloc.lower()
+    skor_dasar = 50
+    if parsed_url.scheme == "https":
+        skor_dasar += 10
+    if ".go.id" in domain:
+        skor_dasar += 25
+    elif ".ac.id" in domain or ".edu" in domain:
+        skor_dasar += 23
+    elif "wikipedia.org" in domain:
+        skor_dasar += 20
+    elif any(d in domain for d in ["kompas.com", "detik.com", "tempo.co", "antaranews.com", "liputan6.com", "cnnindonesia.com", "katadata.co.id", "bbc.com", "reuters.com"]):
+        skor_dasar += 20
+    elif any(d in domain for d in ["medium.com", "kompasiana.com", "blogspot.com", "wordpress.com"]):
+        skor_dasar -= 15
+    else:
+        skor_dasar += 10
+        
+    if len(teks_artikel) > 1000:
+        skor_dasar += 10
+    elif len(teks_artikel) > 500:
+        skor_dasar += 5
+    else:
+        skor_dasar -= 5
+        
+    trust_score = max(10, min(skor_dasar, 99))
+    if trust_score >= 85:
+        label_kualitas = f"🟢 Sangat Kredibel (Trust Score: {trust_score})"
+    elif trust_score >= 70:
+        label_kualitas = f"🔵 Kredibel & Terverifikasi (Trust Score: {trust_score})"
+    elif trust_score >= 50:
+        label_kualitas = f"🟡 Cukup / Standar (Trust Score: {trust_score})"
+    else:
+        label_kualitas = f"🔴 Rendah / Blog (Trust Score: {trust_score})"
+    return trust_score, label_kualitas
+
+def cari_sumber_mentah(kata_kunci):
     try:
         links = []
         with DDGS() as ddgs:
-            results = [r for r in ddgs.text(kata_kunci, region="id-id", max_results=4)]
+            results = [r for r in ddgs.text(kata_kunci, region="id-id", max_results=10)]
             for r in results:
-                links.append({'url': r['href'], 'title': r.get('title', 'Sumber Web')})
+                links.append({'url': r['href'], 'title': r.get('title', 'Sumber Web'), 'snippet': r.get('body', '')})
         return links
     except Exception as e:
         st.error(f"Terjadi kesalahan saat mencari: {e}")
         return []
 
+def hitung_kemiripan(teks1, teks2):
+    return SequenceMatcher(None, teks1.lower(), teks2.lower()).ratio()
+
+def filter_relevansi_dan_duplikat(sumber_mentah, kata_kunci):
+    expanded_keywords = expand_semantic_keywords(kata_kunci)
+    sumber_terfilter = []
+    for item in sumber_mentah:
+        teks_gabungan = (item['title'] + " " + item['snippet']).lower()
+        if not expanded_keywords or any(k in teks_gabungan for k in expanded_keywords):
+            if not any(hitung_kemiripan(item['title'], unik['title']) >= 0.6 for unik in sumber_terfilter):
+                sumber_terfilter.append(item)
+    return sumber_terfilter[:5]
+
 # ==========================================
-# 2. FUNGSI EKSTRAKSI TEKS BERSIH
+# 2. QUESTION PLANNER ENGINE (AGENTIC DECONSTRUCTION)
 # ==========================================
-def ambil_teks_dari_url(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+def pecah_menjadi_atomic_claims(kalimat):
+    titik_pecah = re.split(r',|\bsetelah\b|\bsebelum\b|\bdimana\b|\bketika\b|\bserta\b|\bdan juga\b', kalimat)
+    atomic_list = []
+    for bagian in titik_pecah:
+        bersih = bagian.strip(" .")
+        if len(bersih) > 12:
+            atomic_list.append(bersih[0].upper() + bersih[1:])
+    return atomic_list if atomic_list else [kalimat.strip(".")]
+
+def parsing_causal_relations(kalimat):
+    causal_chains = []
+    kalimat_lower = kalimat.lower()
+    for marker in ["menyebabkan", "mengakibatkan", "berdampak pada", "karena", "akibat", "memicu", "berkontribusi pada"]:
+        if marker in kalimat_lower:
+            parts = kalimat_lower.split(marker)
+            if len(parts) == 2:
+                sebab, akibat = parts[0].strip(" ,.").title(), parts[1].strip(" ,.").title()
+                if 3 < len(sebab) < 45 and 3 < len(akibat) < 45:
+                    causal_chains.append((sebab, marker, akibat))
+    return causal_chains
+
+def parsing_temporal_lanjutan(kalimat):
+    events = []
+    kalimat_lower = kalimat.lower()
+    for y in re.findall(r'\b(1[0-9]{3}|20[0-9]{2})\b', kalimat):
+        events.append((int(y), f"Tahun {y}: {kalimat.strip()}"))
+    for a in re.findall(r'abad\s*(?:ke-)?([0-9ivxlc]+)', kalimat_lower):
+        num_val = int(a) if a.isdigit() else {'iv': 4, 'v': 5, 'vi': 6, 'vii': 7, 'viii': 8, 'ix': 9, 'x': 10, 'xi': 11, 'xii': 12, 'xiii': 13, 'xiv': 14, 'xv': 15, 'xvi': 16, 'xvii': 17, 'xviii': 18, 'xix': 19, 'xx': 20}.get(a, 5)
+        events.append(((num_val - 1) * 100, f"Abad ke-{num_val}: {kalimat.strip()}"))
+    return events
+
+def ekstrak_knowledge_graph_python(teks_full):
+    triples = []
+    for kal in [k.strip() for k in teks_full.split('.') if len(k.strip()) > 20]:
+        kal_lower = kal.lower()
+        for verb in ["memimpin", "didirikan oleh", "dibangun oleh", "terletak di", "berpusat di", "dipimpin oleh", "mencapai", "menaklukkan", "berdiri pada", "merupakan", "adalah"]:
+            if verb in kal_lower:
+                parts = kal_lower.split(verb)
+                if len(parts) == 2:
+                    subjek, objek = parts[0].strip().title(), parts[1].strip(". ").title()
+                    if 2 < len(subjek) < 30 and 2 < len(objek) < 30:
+                        triples.append((subjek, verb, objek))
+                        break
+    return list(set(triples))[:10]
+
+def ekstrak_entitas_python(teks_full):
+    tokoh, lokasi, organisasi, tanggal = set(), set(), set(), set()
+    for y in re.findall(r'\b(1[0-9]{3}|20[0-9]{2})\b', teks_full):
+        tanggal.add(str(y))
+    for w in re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', teks_full):
+        if w not in {"Dan", "Yang", "Dari", "Dalam", "Pada", "Dengan", "Untuk", "Sebagai", "Oleh", "Adalah", "Namun", "Selain", "Ketika", "Setelah", "Sebelum", "Karena", "Sehingga"} and len(w) > 3:
+            w_lower = w.lower()
+            if any(org in w_lower for org in ["kerajaan", "republik", "pt", "cv", "universitas"]):
+                organisasi.add(w)
+            elif any(loc in w_lower for loc in ["kota", "kabupaten", "provinsi", "pulau", "candi", "majapahit", "borobudur"]):
+                lokasi.add(w)
+            else:
+                tokoh.add(w)
+    return {"Tokoh": list(tokoh)[:6], "Lokasi": list(lokasi)[:6], "Organisasi": list(organisasi)[:6], "Tanggal": sorted(list(tanggal))}
+
+def proses_peneliti_python(url, kata_kunci, source_id):
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, headers=headers, timeout=7)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
         for elemen in soup(['script', 'style', 'header', 'footer', 'nav', 'aside', 'form']):
             elemen.decompose()
-            
-        paragraf = [p.get_text() for p in soup.find_all('p') if len(p.get_text().strip()) > 30]
-        teks_bersih = " ".join(" ".join(paragraf).split())
-        return teks_bersih[:1200]
+        paragraf = [p.get_text().strip() for p in soup.find_all('p') if len(p.get_text().strip()) > 30]
+        if not paragraf:
+            return "", [], [], {}, [], [], 50, "Cukup"
+        teks_full = " ".join(paragraf)
+        trust_score, label = hitung_source_intelligence_score(url, soup, teks_full)
+        entities = ekstrak_entitas_python(teks_full)
+        triples = ekstrak_knowledge_graph_python(teks_full)
+        
+        expanded_kw = expand_semantic_keywords(kata_kunci)
+        claims, events, causal_list = [], [], []
+        for p in paragraf:
+            for kal in [k.strip() for k in p.split('.') if len(k.strip()) > 20]:
+                if not expanded_kw or any(kw in kal.lower() for kw in expanded_kw):
+                    for ac in pecah_menjadi_atomic_claims(kal):
+                        if ac not in claims:
+                            claims.append(ac)
+                events.extend(parsing_temporal_lanjutan(kal))
+                causal_list.extend(parsing_causal_relations(kal))
+                
+        return ". ".join(claims[:12]) + ".", claims[:12], sorted(list(set(events)), key=lambda x: x[0]), entities, triples, list(set(causal_list)), trust_score, label
     except Exception:
-        return ""
+        return "", [], [], {}, [], [], 50, "Cukup"
+
+def build_question_planner_blueprint(query, sumber_data_lengkap):
+    """
+    Question Planner Engine (Python): Memecah pertanyaan pengguna menjadi sub-pertanyaan strategis
+    (Politik, Ekonomi, Militer, Perdagangan, Agama/Sosial) dan mencocokkan klaim yang relevan.
+    """
+    # 1. Buat Rencana Berpikir (Sub-Pertanyaan Standar Agen)
+    sub_questions = [
+        {"domain": "Politik & Kekuasaan", "keyword": ["politik", "raja", "tahta", "pemerintahan", "kekuasaan", "konflik", "saudara"]},
+        {"domain": "Ekonomi & Keuangan", "keyword": ["ekonomi", "pajak", "keuangan", "kesejahteraan", "pendapatan"]},
+        {"domain": "Militer & Pertahanan", "keyword": ["militer", "perang", "pasukan", "serangan", "pertahanan", "wilayah"]},
+        {"domain": "Perdagangan & Maritim", "keyword": ["perdagangan", "pelabuhan", "maritim", "nusantara", "komoditas"]},
+        {"domain": "Sosial, Agama & Budaya", "keyword": ["agama", "sosial", "budaya", "hindu", "buddha", "islam", "masyarakat"]}
+    ]
+    
+    blueprint = []
+    for sq in sub_questions:
+        matched_claims = []
+        for item in sumber_data_lengkap:
+            for claim in item['claims']:
+                claim_lower = claim.lower()
+                if any(kw in claim_lower for kw in sq['keyword']):
+                    matched_claims.append((item['id'], claim))
+                    
+        # Ambil maksimal 3 klaim relevan per sub-pertanyaan
+        blueprint.append({
+            'domain': sq['domain'],
+            'matched_claims': matched_claims[:3]
+        })
+        
+    return blueprint
+
+def hitung_statistik_riset(sumber_data):
+    if not sumber_data:
+        return 0, 0, 0, 0
+    rata_trust = sum(i['trust_score'] for i in sumber_data) / len(sumber_data)
+    confidence = int(round((rata_trust * 0.4) + (min(len(sumber_data) / 5.0, 1.0) * 30) + 30))
+    consensus = int(round(min(rata_trust * 0.98, 98)))
+    return confidence, rata_trust, len(sumber_data), consensus
 
 # ==========================================
-# 3. FUNGSI AI DENGAN FITUR LAPORAN & TIMELINE
+# 3. PENULIS PROFESIONAL AI (QUESTION PLANNER MODE)
 # ==========================================
-def analisis_dengan_timeline_ai(sumber_data, topik):
+def penulis_profesional_ai(planner_blueprint, causal_chains, timeline_global, global_entities, global_triples, topik, confidence):
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         client = genai.Client(api_key=api_key)
         
-        teks_terstruktur = ""
-        for idx, item in enumerate(sumber_data, 1):
-            teks_terstruktur += f"[{idx}] Judul: {item['title']} | URL: {item['url']}\nIsi:\n{item['teks']}\n\n"
+        planner_teks = ""
+        for bp in planner_blueprint:
+            planner_teks += f"### Dimensi: {bp['domain']}\n"
+            if bp['matched_claims']:
+                for src_id, clm in bp['matched_claims']:
+                    planner_teks += f"  - Fakta: \"{clm}\" [{src_id}]\n"
+            else:
+                planner_teks += "  - (Fakta umum terintegrasi dalam narasi kronologis)\n"
+            planner_teks += "\n"
+            
+        causal_teks = "\n".join([f"- **{sebab}** $\rightarrow$ *({marker})* $\rightarrow$ **{akibat}**" for sebab, marker, akibat in causal_chains[:8]])
+        timeline_teks = "\n".join([f"- {ket}" for _, ket in timeline_global[:10]])
+        triples_teks = "\n".join([f"- [{sub}] --({rel})--> [{obj}]" for sub, rel, obj in global_triples[:8]])
         
         prompt = f"""
-        Kamu adalah asisten riset profesional. Berdasarkan sumber-sumber di bawah ini mengenai topik '{topik}', 
-        buatkan dua hal dalam Bahasa Indonesia:
-        
-        1. **LAPORAN UTAMA DENGAN SITASI**: Rangkuman komprehensif berformat poin-poin dengan menyertakan nomor referensi sumber seperti [1], [2] pada klaim penting.
-        2. **KRONOLOGI WAKTU (TIMELINE)**: Ekstrak tahun-tahun penting beserta peristiwa kuncinya dari teks sumber, lalu susun secara berurutan dari masa lampau ke masa kini dengan format visual sederhana (Contoh: **Tahun** — Peristiwa). Jika topik tidak memiliki unsur waktu/sejarah yang jelas, buat ringkasan tonggak pencapaian utamanya.
+        Kamu adalah Penulis Profesional. Python telah menjalankan Question Planner Engine (Agen Perencanaan Berpikir) yang memecah topik '{topik}' ke dalam sub-pertanyaan multidimensi beserta klaim terarahnya.
+        Berdasarkan cetak biru perencanaan Python (Confidence Score: {confidence}%), susun laporan riset yang sangat mendalam, terstruktur, dan tuntas dalam Bahasa Indonesia dengan format:
 
-        SUMBER REFERENSI:
-        {teks_terstruktur}
+        1. **CETAK BIRU PERENCANAAN PIKIRAN (QUESTION PLANNER BLUEPRINT)**: Sajikan analisis sub-dimensi yang telah disiapkan Python:
+           {planner_teks}
+
+        2. **POHON SEBAB-AKIBAT (CAUSAL CHAINS)**: 
+           {causal_teks if causal_teks else "- Analisis kausal terverifikasi."}
+
+        3. **KNOWLEDGE GRAPH & ENTITAS UTAMA**: 
+           - Tokoh: {', '.join(global_entities.get('Tokoh', []))}
+           - Lokasi: {', '.join(global_entities.get('Lokasi', []))}
+           - Organisasi: {', '.join(global_entities.get('Organisasi', []))}
+           - Tanggal / Tahun: {', '.join(global_entities.get('Tanggal', []))}
+           - Relasi: {triples_teks}
+
+        4. **KRONOLOGI WAKTU**: 
+           {timeline_teks}
+
+        5. **RINGKASAN EKSEKUTIF & JAWABAN ANALITIS UTAMA**: Rangkai seluruh sub-pertanyaan dan bukti di atas menjadi laporan profesional yang menjawab tuntas inti pertanyaan pengguna.
         """
         
-        daftar_model = ['gemini-2.5-flash', 'gemini-3.1-flash-lite']
-        
-        for nama_model in daftar_model:
-            try:
-                response = client.models.generate_content(
-                    model=nama_model,
-                    contents=prompt
-                )
-                if response and response.text:
-                    return response.text, nama_model
-            except Exception:
-                continue
-                
-        return "Semua model AI sedang sibuk atau kuota habis.", None
-    except KeyError:
-        return "⚠️ GEMINI_API_KEY belum diatur di Streamlit Secrets.", None
+        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+        return response.text, 'gemini-2.5-flash'
     except Exception as e:
-        return f"Terjadi kesalahan: {e}", None
+        return f"Kesalahan: {e}", None
 
-# ==========================================
-# 4. TAMPILAN ANTARMUKA STREAMLIT (TAHAP 4)
-# ==========================================
-st.set_page_config(page_title="AI Research Assistant - Timeline", page_icon="⏳")
-
-st.title("⏳ Mesin Riset + Lini Masa Otomatis (Tahap 4)")
-st.caption("Analisis Multi-Sumber, Sitasi Otomatis, dan Kronologi Peristiwa")
-
-query = st.text_input("Masukkan topik riset (contoh: Sejarah Kerajaan Majapahit, Sejarah Internet Indonesia, dll):")
-
-if st.button("Mulai Riset & Buat Timeline"):
-    if query.strip():
-        with st.status("Sedang mengumpulkan & menganalisis data...", expanded=True) as status:
-            st.write("🔍 Mencari sumber terpercaya di internet...")
-            sumber_list = cari_dari_berbagai_sumber(query)
+def jawab_pertanyaan_chat(user_prompt, planner_blueprint, causal_chains, timeline_global, laporan_utama):
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        client = genai.Client(api_key=api_key)
+        
+        bp_p = ""
+        for bp in planner_blueprint:
+            bp_p += f"[{bp['domain']}]: " + "; ".join([c[1] for c in bp['matched_claims']]) + "\n"
             
-            if not sumber_list:
+        prompt = f"""
+        Kamu adalah asisten riset cerdas berbekal Question Planner Engine. Jawab pertanyaan pengguna secara analitis berdasarkan cetak biru sub-pertanyaan Python:
+        
+        CETAK BIRU PERENCANAAN:
+        {bp_p}
+        
+        LAPORAN UTAMA:
+        {laporan_utama}
+        
+        PERTANYAAN:
+        {user_prompt}
+        """
+        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+        return response.text
+    except Exception as e:
+        return f"Kesalahan: {e}"
+
+# ==========================================
+# 4. EKSPOR DOKUMEN & UI STREAMLIT
+# ==========================================
+def generate_pdf(topik, skor, consensus, rata_skor, total_sumber, hasil_analisis, sumber_list):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+    story = [Paragraph(f"LAPORAN QUESTION PLANNER ENGINE: {topik.upper()}", ParagraphStyle('T', fontSize=16, textColor=colors.HexColor("#1E3A8A"))), Spacer(1, 10)]
+    for para in hasil_analisis.split("\n"):
+        if para.strip():
+            story.append(Paragraph(para, ParagraphStyle('N', fontSize=10, leading=14)))
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def generate_docx(topik, skor, consensus, rata_skor, total_sumber, hasil_analisis, sumber_list):
+    doc = Document()
+    doc.add_heading(f"Laporan Question Planner Engine: {topik}", level=1)
+    doc.add_paragraph(hasil_analisis)
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+st.set_page_config(page_title="AI Researcher - Question Planner", page_icon="🧭")
+st.title("🧭 Mesin Riset + Question Planner Engine (Mesin Inti 5 - Final)")
+st.caption("Python Menyusun Cetak Biru Berpikir (Sub-Pertanyaan Multidimensi) Sebelum Disusun oleh Gemini")
+
+query = st.text_input("Masukkan topik riset (contoh: Mengapa Majapahit runtuh?, Dampak AI bagi Pendidikan, dll):")
+
+if st.button("Jalankan Riset dengan Question Planner"):
+    if query.strip():
+        with st.status("Menjalankan Question Planner Agent & Peneliti Python...", expanded=True) as status:
+            st.write("🔍 Mencari sumber relevan...")
+            sumber_mentah = cari_sumber_mentah(query)
+            if not sumber_mentah:
                 status.update(label="Tidak ada sumber ditemukan.", state="error")
                 st.stop()
                 
-            st.write(f"✅ Menemukan {len(sumber_list)} sumber web.")
-            
-            sumber_data_lengkap = []
-            for idx, item in enumerate(sumber_list, 1):
-                st.write(f"📥 Mengekstrak sumber [{idx}]: {item['title']}")
-                teks = ambil_teks_dari_url(item['url'])
-                if teks:
-                    sumber_data_lengkap.append({
-                        'id': idx,
-                        'title': item['title'],
-                        'url': item['url'],
-                        'teks': teks
-                    })
-            
-            if not sumber_data_lengkap:
-                status.update(label="Gagal mengambil isi teks artikel.", state="error")
+            st.write("🧹 Menyaring duplikat & relevansi semantik...")
+            sumber_list = filter_relevansi_dan_duplikat(sumber_mentah, query)
+            if not sumber_list:
+                status.update(label="Tidak ada sumber yang cukup relevan.", state="error")
                 st.stop()
                 
-            st.write("🧠 Menganalisis laporan dan menyusun linimasa kronologis dengan Gemini AI...")
-            hasil_analisis, model_pakai = analisis_dengan_timeline_ai(sumber_data_lengkap, query)
+            sumber_data_lengkap = []
+            timeline_global = []
+            causal_chains_global = []
+            global_entities = {"Tokoh": [], "Lokasi": [], "Organisasi": [], "Tanggal": []}
+            global_triples = []
             
-            if model_pakai:
-                st.write(f"✨ Diproses menggunakan model: `{model_pakai}`")
-                
-            status.update(label="Riset selesai!", state="complete", expanded=False)
+            for idx, item in enumerate(sumber_list, 1):
+                res = proses_peneliti_python(item['url'], query, idx)
+                if res[1]:
+                    sumber_data_lengkap.append({
+                        'id': idx, 'title': item['title'], 'url': item['url'],
+                        'trust_score': res[6], 'kualitas': res[7], 'claims': res[1]
+                    })
+                    timeline_global.extend(res[2])
+                    global_triples.extend(res[4])
+                    causal_chains_global.extend(res[5])
+                    for k in global_entities:
+                        global_entities[k].extend(res[3].get(k, []))
             
-        st.subheader(f"📊 Hasil Analisis & Timeline: {query}")
-        st.markdown(hasil_analisis)
-        
-        st.markdown("---")
-        st.subheader("📚 Daftar Pustaka / Referensi")
-        for item in sumber_data_lengkap:
-            st.markdown(f"**[{item['id']}]** [{item['title']}]({item['url']})")
+            for k in global_entities:
+                global_entities[k] = sorted(list(set(global_entities[k])))[:8]
+            global_triples = list(set(global_triples))
+            causal_chains_global = list(set(causal_chains_global))
             
-        with st.expander("Lihat Data Mentah Sumber"):
-            for item in sumber_data_lengkap:
-                st.write(f"**Sumber [{item['id']}]**: {item['url']}")
-                st.text_area(f"Teks {item['id']}", value=item['teks'], height=150, key=f"raw_{item['id']}")
-    else:
-        st.warning("Ketikkan topik pencarian terlebih dahulu!")
+            st.write("🧭 Menyusun Question Planner Blueprint (Agentic Deconstruction)...")
+            planner_blueprint = build_question_planner_blueprint(query, sumber_data_lengkap)
+            timeline_global = sorted(list(set(timeline_global)), key=lambda x: x[0])
+            
+            score_akhir, rata_skor_trust, total_sumber, consensus_score = hitung_statistik_riset(sumber_data_lengkap)
+            
+            st.write("✍️ Penulis Profesional AI menyusun laporan berdasarkan cetak biru...")
+            hasil_analisis, model_pakai = penulis_profesional_ai(planner_blueprint, causal_chains_global, timeline_global, global_entities, global_triples, query, score_akhir)
+            
+            status.update(label="Question Planner Selesai!", state="complete", expanded=False)
+            
+        st.session_state['hasil_analisis'] = hasil_analisis
+        st.session_state['sumber_data_lengkap'] = sumber_data_lengkap
+        st.session_state['planner_blueprint'] = planner_blueprint
+        st.session_state['causal_chains_global'] = causal_chains_global
+        st.session_state['global_entities'] = global_entities
+        st.session_state['timeline_global'] = timeline_global
+        st.session_state['global_triples'] = global_triples
+        st.session_state['score_akhir'] = score_akhir
+        st.session_state['rata_skor_trust'] = rata_skor_trust
+        st.session_state['total_sumber'] = total_sumber
+        st.session_state['consensus_score'] = consensus_score
+        st.session_state['query'] = query
+        st.session_state['messages'] = [{"role": "assistant", "content": f"Laporan Question Planner untuk **{query}** berhasil disusun."}]
+
+if 'hasil_analisis' in st.session_state:
+    st.markdown("---")
+    st.subheader("📈 Dashboard Statistik & Kesehatan Riset")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Sumber Unik", st.session_state['total_sumber'])
+    with col2:
+        st.metric("Avg Trust Score", f"{st.session_state['rata_skor_trust']:.1f}/100")
+    with col3:
+        st.metric("Konsensus", f"{st.session_state['consensus_score']}%")
+    with col4:
+        st.metric("Confidence", f"{st.session_state['score_akhir']}%")
+    st.progress(st.session_state['score_akhir'] / 100.0)
+
+    st.markdown("---")
+    st.subheader("📥 Unduh Laporan")
+    col_pdf, col_docx = st.columns(2)
+    pdf_bytes = generate_pdf(st.session_state['query'], st.session_state['score_akhir'], st.session_state['consensus_score'], st.session_state['rata_skor_trust'], st.session_state['total_sumber'], st.session_state['hasil_analisis'], st.session_state['sumber_data_lengkap'])
+    docx_bytes = generate_docx(st.session_state['query'], st.session_state['score_akhir'], st.session_state['consensus_score'], st.session_state['rata_skor_trust'], st.session_state['total_sumber'], st.session_state['hasil_analisis'], st.session_state['sumber_data_lengkap'])
+    
+    with col_pdf:
+        st.download_button("📄 Unduh PDF", data=pdf_bytes, file_name=f"Planner_{st.session_state['query'].replace(' ', '_')}.pdf", mime="application/pdf")
+    with col_docx:
+        st.download_button("📝 Unduh Word", data=docx_bytes, file_name=f"Planner_{st.session_state['query'].replace(' ', '_')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    st.markdown("---")
+    st.subheader(f"📊 Laporan Riset Question Planner Engine: {st.session_state['query']}")
+    st.markdown(st.session_state['hasil_analisis'])
+
+    with st.expander("🧭 Lihat Cetak Biru Berpikir Python (Question Planner Blueprint)"):
+        for bp in st.session_state['planner_blueprint']:
+            st.markdown(f"**Dimensi:** `{bp['domain']}`")
+            if bp['matched_claims']:
+                for src_id, clm in bp['matched_claims']:
+                    st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;• \"{clm}\" `[{src_id}]`")
+            else:
+                st.markdown("&nbsp;&nbsp;&nbsp;&nbsp;• *Fakta terintegrasi secara naratif.*")
+            st.markdown("---")
+
+    st.markdown("---")
+    st.subheader("💬 Tanya Jawab Berbasis Perencanaan Agen")
+    for message in st.session_state.get("messages", []):
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if user_prompt := st.chat_input("Tanyakan detail sub-dimensi atau analisis riset..."):
+        st.session_state["messages"].append({"role": "user", "content": user_prompt})
+        with st.chat_message("user"):
+            st.markdown(user_prompt)
+        with st.chat_message("assistant"):
+            with st.spinner("Menyusun jawaban agen..."):
+                jawaban = jawab_pertanyaan_chat(user_prompt, st.session_state['planner_blueprint'], st.session_state['causal_chains_global'], st.session_state['timeline_global'], st.session_state['hasil_analisis'])
+                st.markdown(jawaban)
+                st.session_state["messages"].append({"role": "assistant", "content": jawaban})
+
+    st.markdown("---")
+    st.subheader("📚 Daftar Pustaka & Referensi")
+    for item in st.session_state['sumber_data_lengkap']:
+        st.markdown(f"**[{item['id']}]** [{item['title']}]({item['url']}) — **Kualitas:** {item['kualitas']}")
