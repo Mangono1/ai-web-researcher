@@ -2,38 +2,30 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 
-# --- 1. FUNGSI PENCARIAN GOOGLE ---
-def cari_di_google(kata_kunci, api_key):
-    url = "https://google.serper.dev/search"
-    payload = {"q": kata_kunci, "gl": "id", "hl": "id"}
-    headers = {
-        'X-API-KEY': api_key,
-        'Content-Type': 'application/json'
+# --- 1. FUNGSI PENCARIAN GOOGLE CUSTOM SEARCH (CSE) ---
+def cari_di_google_cse(kata_kunci, api_key, cx_id):
+    url = "https://customsearch.googleapis.com/customsearch/v1"
+    params = {
+        'q': kata_kunci,
+        'key': api_key,
+        'cx': cx_id,
     }
-    response = requests.post(url, headers=headers, json=payload)
+    
+    response = requests.get(url, params=params)
     
     if response.status_code == 200:
         data = response.json()
-        links = [result['link'] for result in data.get('organic', [])[:3]]
+        # Mengambil 3 link teratas dari hasil pencarian
+        links = [item['link'] for item in data.get('items', [])[:3]]
         return links
-    return []
+    else:
+        st.error(f"Error dari Google: {response.status_code} - {response.text}")
+        return []
 
-# --- 2. FUNGSI EKSTRAKSI TEKS ---
+# --- KODE EKSTRAKSI TEKS TETAP SAMA ---
 def ambil_teks_artikel(url):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        for elemen in soup(['script', 'style', 'header', 'footer', 'nav', 'aside', 'form']):
-            elemen.decompose()
-            
-        paragraf = [p.get_text() for p in soup.find_all('p') if len(p.get_text().strip()) > 30]
-        teks_bersih = " ".join(" ".join(paragraf).split())
-        return teks_bersih
-    except Exception:
-        return ""
-
+    # ... (Gunakan fungsi ambil_teks_artikel dari kode sebelumnya) ...
+    pass
 # --- 3. ANTARMUKA STREAMLIT (UI) ---
 st.set_page_config(page_title="Pencari & Perangkum AI", page_icon="🔍")
 
