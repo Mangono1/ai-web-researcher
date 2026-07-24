@@ -40,7 +40,7 @@ def ambil_teks_artikel(url):
         return ""
 
 # ==========================================
-# 3. FUNGSI PERANGKUM AI (GEMINI)
+# 3. FUNGSI PERANGKUM AI (DENGAN CADANGAN OTOMATIS)
 # ==========================================
 def rangkum_dengan_ai(teks_kumpul, topik):
     try:
@@ -56,15 +56,26 @@ def rangkum_dengan_ai(teks_kumpul, topik):
         {teks_kumpul[:4000]}
         """
         
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        return response.text
+        # Coba model pertama: gemini-2.5-flash
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt
+            )
+            return response.text
+        except Exception as e_utama:
+            # Jika 2.5 gagal, otomatis pindah ke jalur cadangan: gemini-3.1-flash-lite
+            st.warning(f"Model utama (2.5-flash) sedang kendala, beralih ke cadangan (3.1-flash-lite)...")
+            response_cadangan = client.models.generate_content(
+                model='gemini-3.1-flash-lite',
+                contents=prompt
+            )
+            return response_cadangan.text
+
     except KeyError:
         return "⚠️ GEMINI_API_KEY belum diatur di Streamlit Secrets."
     except Exception as e:
-        return f"Terjadi kesalahan saat memanggil AI: {e}"
+        return f"Terjadi kesalahan total pada AI: {e}"
 
 # ==========================================
 # 4. TAMPILAN ANTARMUKA STREAMLIT
@@ -72,7 +83,7 @@ def rangkum_dengan_ai(teks_kumpul, topik):
 st.set_page_config(page_title="Asisten Riset AI", page_icon="🤖")
 
 st.title("🤖 Asisten Riset & Perangkum AI")
-st.caption("Pencarian Web + Ekstraksi + Ringkasan Pintar Gemini")
+st.caption("Pencarian Web + Ekstraksi + Sistem Cadangan Pintar Gemini")
 
 query = st.text_input("Masukkan topik atau pertanyaan riset:")
 
