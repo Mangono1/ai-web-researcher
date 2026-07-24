@@ -81,6 +81,53 @@ if st.button("Mulai Cari & Ekstrak"):
             st.warning("Gagal mengambil teks dari artikel yang ditemukan.")
     else:
         st.warning("Ketikkan topik pencarian terlebih dahulu!")
+        # Ambil teks paragraf yang panjangnya lebih dari 30 karakter
+        paragraf = [p.get_text() for p in soup.find_all('p') if len(p.get_text().strip()) > 30]
+        teks_bersih = " ".join(" ".join(paragraf).split())
+        return teks_bersih
+    except Exception:
+        return ""
+
+# ==========================================
+# 3. TAMPILAN ANTARMUKA STREAMLIT
+# ==========================================
+st.set_page_config(page_title="Asisten Riset Web", page_icon="🔍")
+
+st.title("🔍 Asisten Riset Otomatis")
+st.caption("Pencarian Web Otomatis + Ekstraksi Teks (Tanpa API Key!)")
+
+# Form Input
+query = st.text_input("Masukkan topik atau pertanyaan pencarian:")
+
+if st.button("Mulai Cari & Ekstrak"):
+    if query.strip():
+        with st.status("Sedang memproses...", expanded=True) as status:
+            st.write("🔍 Mencari referensi terbaik di internet...")
+            links = cari_di_web(query)
+            
+            if not links:
+                status.update(label="Tidak ada hasil ditemukan.", state="error")
+                st.stop()
+                
+            st.write(f"✅ Berhasil menemukan {len(links)} URL artikel.")
+            
+            hasil_ekstraksi = ""
+            for idx, link in enumerate(links, 1):
+                st.write(f"📥 Mengambil isi teks dari artikel {idx}: {link}")
+                teks = ambil_teks_artikel(link)
+                if teks:
+                    hasil_ekstraksi += f"=== SUMBER {idx}: {link} ===\n"
+                    hasil_ekstraksi += f"{teks[:1200]}...\n\n"
+            
+            status.update(label="Proses ekstraksi selesai!", state="complete", expanded=False)
+            
+        if hasil_ekstraksi:
+            st.subheader("📑 Hasil Ekstraksi Teks")
+            st.text_area("Teks bersih yang siap diringkas:", value=hasil_ekstraksi, height=350)
+        else:
+            st.warning("Gagal mengambil teks dari artikel yang ditemukan.")
+    else:
+        st.warning("Ketikkan topik pencarian terlebih dahulu!")
     try:
         response = requests.get(url, headers=headers, timeout=8)
         soup = BeautifulSoup(response.text, 'html.parser')
