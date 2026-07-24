@@ -26,6 +26,8 @@ def expand_semantic_keywords(kata_kunci):
     semantic_synonyms = {
         "mobil listrik": ["electric vehicle", "ev", "battery electric vehicle", "bev", "kendaraan listrik"],
         "electric vehicle": ["mobil listrik", "ev", "kendaraan listrik"],
+        "pppk": ["pegawai pemerintah dengan perjanjian kerja", "asn", "pegawai honorer", "aparatur sipil negara"],
+        "pppk paruh waktu": ["pegawai pemerintah dengan perjanjian kerja", "paruh waktu", "paruh-waktu", "asn paruh waktu"],
         "kesehatan": ["health", "medis", "medical", "klinis", "clinical"],
         "pendidikan": ["education", "sekolah", "school", "kurikulum", "learning"],
         "ekonomi": ["economy", "financial", "keuangan", "bisnis", "market", "pasar"],
@@ -105,7 +107,7 @@ def filter_relevansi_dan_duplikat(sumber_mentah, kata_kunci):
     return sumber_terfilter[:5]
 
 # ==========================================
-# 2. PYTHON RESEARCH ENGINES
+# 2. PYTHON RESEARCH ENGINES (ROBUST & SAFE)
 # ==========================================
 def pecah_menjadi_atomic_claims(kalimat):
     titik_pecah = re.split(r',|\bsetelah\b|\bsebelum\b|\bdimana\b|\bketika\b|\bserta\b|\bdan juga\b', kalimat)
@@ -159,9 +161,9 @@ def ekstrak_entitas_python(teks_full):
     for w in re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', teks_full):
         if w not in {"Dan", "Yang", "Dari", "Dalam", "Pada", "Dengan", "Untuk", "Sebagai", "Oleh", "Adalah", "Namun", "Selain", "Ketika", "Setelah", "Sebelum", "Karena", "Sehingga"} and len(w) > 3:
             w_lower = w.lower()
-            if any(org in w_lower for org in ["kerajaan", "republik", "pt", "cv", "universitas"]):
+            if any(org in w_lower for org in ["kerajaan", "republik", "pt", "cv", "universitas", "badan"]):
                 organisasi.add(w)
-            elif any(loc in w_lower for loc in ["kota", "kabupaten", "provinsi", "pulau", "candi", "majapahit", "borobudur"]):
+            elif any(loc in w_lower for loc in ["kota", "kabupaten", "provinsi", "pulau", "candi", "majapahit", "borobudur", "indonesia"]):
                 lokasi.add(w)
             else:
                 tokoh.add(w)
@@ -174,9 +176,13 @@ def proses_peneliti_python(url, kata_kunci, source_id):
         soup = BeautifulSoup(response.text, 'html.parser')
         for elemen in soup(['script', 'style', 'header', 'footer', 'nav', 'aside', 'form']):
             elemen.decompose()
+            
         paragraf = [p.get_text().strip() for p in soup.find_all('p') if len(p.get_text().strip()) > 30]
+        
+        # PERBAIKAN UTAMA BUG 3: Selama teks berhasil diambil, proses dan selamatkan semuanya!
         if not paragraf:
             return "", [], [], {}, [], [], 50, "Cukup"
+            
         teks_full = " ".join(paragraf)
         trust_score, label = hitung_source_intelligence_score(url, soup, teks_full)
         entities = ekstrak_entitas_python(teks_full)
@@ -184,26 +190,38 @@ def proses_peneliti_python(url, kata_kunci, source_id):
         
         expanded_kw = expand_semantic_keywords(kata_kunci)
         claims, events, causal_list = [], [], []
+        
         for p in paragraf:
             for kal in [k.strip() for k in p.split('.') if len(k.strip()) > 20]:
-                if not expanded_kw or any(kw in kal.lower() for kw in expanded_kw):
+                kal_lower = kal.lower()
+                ada_keyword = any(kw in kal_lower for kw in expanded_kw)
+                ada_angka = bool(re.search(r'\b(1[0-9]{3}|20[0-9]{2})\b', kal))
+                
+                if ada_keyword or ada_angka:
                     for ac in pecah_menjadi_atomic_claims(kal):
                         if ac not in claims:
                             claims.append(ac)
+                            
                 events.extend(parsing_temporal_lanjutan(kal))
                 causal_list.extend(parsing_causal_relations(kal))
                 
+        # Safe fallback: Jika claims kosong, ambil langsung paragraf awal sebagai klaim aman
+        if not claims and paragraf:
+            for p in paragraf[:5]:
+                for ac in pecah_menjadi_atomic_claims(p):
+                    if ac not in claims:
+                        claims.append(ac)
+                        
         return ". ".join(claims[:12]) + ".", claims[:12], sorted(list(set(events)), key=lambda x: x[0]), entities, triples, list(set(causal_list)), trust_score, label
     except Exception:
         return "", [], [], {}, [], [], 50, "Cukup"
 
 def build_question_planner_blueprint(query, sumber_data_lengkap):
     sub_questions = [
-        {"domain": "Politik & Kekuasaan", "keyword": ["politik", "raja", "tahta", "pemerintahan", "kekuasaan", "konflik", "saudara"]},
-        {"domain": "Ekonomi & Keuangan", "keyword": ["ekonomi", "pajak", "keuangan", "kesejahteraan", "pendapatan"]},
-        {"domain": "Militer & Pertahanan", "keyword": ["militer", "perang", "pasukan", "serangan", "pertahanan", "wilayah"]},
-        {"domain": "Perdagangan & Maritim", "keyword": ["perdagangan", "pelabuhan", "maritim", "nusantara", "komoditas"]},
-        {"domain": "Sosial, Agama & Budaya", "keyword": ["agama", "sosial", "budaya", "hindu", "buddha", "islam", "masyarakat"]}
+        {"domain": "Kebijakan & Regulasi", "keyword": ["regulasi", "kebijakan", "aturan", "pemerintah", "keputusan", "pppk", "pegawai"]},
+        {"domain": "Status & Gaji", "keyword": ["status", "gaji", "pendapatan", "honor", "formasi", "pengangkatan"]},
+        {"domain": "Ketentuan Waktu & Teknis", "keyword": ["waktu", "jam", "kerja", "paruh", "ketentuan", "teknis"]},
+        {"domain": "Dampak & Formasi", "keyword": ["dampak", "formasi", "kebutuhan", "seleksi", "pelamar"]}
     ]
     blueprint = []
     for sq in sub_questions:
@@ -229,7 +247,7 @@ def hitung_statistik_riset(sumber_data):
 def generate_pdf(topik, skor, consensus, rata_skor, total_sumber, hasil_analisis, sumber_list):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
-    story = [Paragraph(f"LAPORAN QUESTION PLANNER: {topik.upper()}", ParagraphStyle('T', fontSize=16, textColor=colors.HexColor("#1E3A8A"))), Spacer(1, 10)]
+    story = [Paragraph(f"LAPORAN RISET: {topik.upper()}", ParagraphStyle('T', fontSize=16, textColor=colors.HexColor("#1E3A8A"))), Spacer(1, 10)]
     for para in hasil_analisis.split("\n"):
         if para.strip():
             story.append(Paragraph(para, ParagraphStyle('N', fontSize=10, leading=14)))
@@ -239,20 +257,20 @@ def generate_pdf(topik, skor, consensus, rata_skor, total_sumber, hasil_analisis
 
 def generate_docx(topik, skor, consensus, rata_skor, total_sumber, hasil_analisis, sumber_list):
     doc = Document()
-    doc.add_heading(f"Laporan Question Planner: {topik}", level=1)
+    doc.add_heading(f"Laporan Riset: {topik}", level=1)
     doc.add_paragraph(hasil_analisis)
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
     return buffer.getvalue()
 
-st.set_page_config(page_title="AI Researcher - Modular Engine", page_icon="🧭")
-st.title("🧭 Mesin Riset Modular + Question Planner Engine")
-st.caption("Python Memproses Data Riset -> gemini.py Menangani AI dengan Sistem Fallback Model Otomatis")
+st.set_page_config(page_title="AI Researcher - Robust Architecture", page_icon="🛡️")
+st.title("🛡️ Mesin Riset Tangguh + Question Planner Engine")
+st.caption("Python Menjamin Tidak Ada Sumber yang Terbuang Berdasarkan Keberhasilan Akses Artikel (teks_full)")
 
-query = st.text_input("Masukkan topik riset (contoh: Mengapa Majapahit runtuh?, dll):")
+query = st.text_input("Masukkan topik riset (contoh: PPPK paruh waktu, Sejarah Majapahit, dll):")
 
-if st.button("Jalankan Riset Modular"):
+if st.button("Jalankan Riset Tangguh"):
     if query.strip():
         with st.status("Menjalankan Peneliti Python & Gemini AI...", expanded=True) as status:
             st.write("🔍 Mencari sumber relevan...")
@@ -261,7 +279,7 @@ if st.button("Jalankan Riset Modular"):
                 status.update(label="Tidak ada sumber ditemukan.", state="error")
                 st.stop()
                 
-            st.write("🧹 Menyaring duplikat & relevansi semantik...")
+            st.write("🧹 Menyaring duplikat & relevansi...")
             sumber_list = filter_relevansi_dan_duplikat(sumber_mentah, query)
             if not sumber_list:
                 status.update(label="Tidak ada sumber yang cukup relevan.", state="error")
@@ -275,16 +293,26 @@ if st.button("Jalankan Riset Modular"):
             
             for idx, item in enumerate(sumber_list, 1):
                 res = proses_peneliti_python(item['url'], query, idx)
-                if res[1]:
+                
+                # PERBAIKAN UTAMA BUG 3: Cukup periksa apakah teks artikel berhasil diunduh (res[0] tidak kosong atau ada klaim/entitas)
+                if res[0] or res[1] or res[3]:
                     sumber_data_lengkap.append({
                         'id': idx, 'title': item['title'], 'url': item['url'],
-                        'trust_score': res[6], 'kualitas': res[7], 'claims': res[1]
+                        'trust_score': res[6], 'kualitas': res[7], 'claims': res[1] if res[1] else [item['snippet']]
                     })
                     timeline_global.extend(res[2])
                     global_triples.extend(res[4])
                     causal_chains_global.extend(res[5])
                     for k in global_entities:
                         global_entities[k].extend(res[3].get(k, []))
+            
+            # Pengaman absolut: Jika karena alasan ekstrem sumber_data_lengkap masih kosong, gunakan snippet mentah
+            if not sumber_data_lengkap and sumber_list:
+                for idx, item in enumerate(sumber_list, 1):
+                    sumber_data_lengkap.append({
+                        'id': idx, 'title': item['title'], 'url': item['url'],
+                        'trust_score': 60, 'kualitas': "🟡 Standar", 'claims': [item['snippet']]
+                    })
             
             for k in global_entities:
                 global_entities[k] = sorted(list(set(global_entities[k])))[:8]
