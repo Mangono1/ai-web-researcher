@@ -76,11 +76,7 @@ def hitung_source_intelligence_score(url, soup_obj, teks_artikel):
     return trust_score, label_kualitas
 
 def cari_sumber_mentah(kueri_asli, daftar_ekspansi):
-    """
-    PERBAIKAN BUG 2: Multi-Query Search Engine dengan Regional Fallback (id-id -> wt-wt).
-    Mencari secara lokal (`id-id`) terlebih dahulu, jika hasil kurang/kosong, 
-    otomatis fallback atau menggabungkannya dengan pencarian global (`wt-wt`).
-    """
+    """Multi-Query Search Engine dengan Regional Fallback (id-id -> wt-wt)."""
     try:
         links_unik = {}
         kueri_pencarian = [kueri_asli] + daftar_ekspansi[:3]
@@ -88,11 +84,7 @@ def cari_sumber_mentah(kueri_asli, daftar_ekspansi):
         
         with DDGS() as ddgs:
             for kueri in kueri_pencarian:
-                # 1. Coba region Indonesia (id-id)
                 results = list(ddgs.text(kueri, region="id-id", max_results=5))
-                
-                # 2. Jika hasil lokal terlalu sedikit (biasanya topik internasional seperti Rust/TensorFlow),
-                # fallback/gabungkan dengan pencarian global (wt-wt)
                 if len(results) < 3:
                     results_global = list(ddgs.text(kueri, region="wt-wt", max_results=7))
                     results = results + results_global
@@ -114,17 +106,12 @@ def hitung_kemiripan(teks1, teks2):
     return SequenceMatcher(None, teks1.lower(), teks2.lower()).ratio()
 
 def filter_relevansi_dan_duplikat(sumber_mentah, kata_kunci):
-    """
-    PERBAIKAN BUG 1: Sistem Skor Kecocokan & Perankingan Berdasarkan Jumlah Keyword.
-    Menghitung skor match setiap sumber, menyaring yang memiliki match >= 1, 
-    dan meranking ulang sumber dari skor tertinggi ke terendah.
-    """
+    """Sistem Skor Kecocokan & Perankingan Berdasarkan Jumlah Keyword."""
     expanded_keywords = expand_semantic_keywords(kata_kunci)
     scored_sources = []
     
     for item in sumber_mentah:
         teks_gabungan = (item['title'] + " " + item['snippet']).lower()
-        
         match_score = 0
         for kw in expanded_keywords:
             if kw in teks_gabungan:
@@ -231,6 +218,28 @@ def ekstrak_entitas_python(teks_full):
                 tokoh.add(w)
     return {"Tokoh": list(tokoh)[:6], "Lokasi": list(lokasi)[:6], "Organisasi": list(organisasi)[:6], "Tanggal": sorted(list(tanggal))}
 
+def hitung_skor_semantik_kalimat(kalimat, expanded_keywords):
+    """
+    PERBAIKAN BUG 3: Lightweight Semantic Fuzzy Scoring.
+    Menghitung skor kedekatan semantik berdasarkan token overlap dan fuzzy word matching
+    tanpa memerlukan dependensi machine learning yang berat.
+    """
+    kalimat_lower = kalimat.lower()
+    words_in_kalimat = set(re.findall(r'\w+', kalimat_lower))
+    
+    score = 0
+    for kw in expanded_keywords:
+        kw_lower = kw.lower()
+        if kw_lower in kalimat_lower:
+            score += 2
+        else:
+            # Cek token overlap / bagian kata yang mirip
+            kw_parts = kw_lower.split()
+            for part in kw_parts:
+                if len(part) > 3 and part in words_in_kalimat:
+                    score += 1
+    return score
+
 def proses_peneliti_python(url, kata_kunci, source_id):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -253,11 +262,11 @@ def proses_peneliti_python(url, kata_kunci, source_id):
         
         for p in paragraf:
             for kal in [k.strip() for k in p.split('.') if len(k.strip()) > 20]:
-                kal_lower = kal.lower()
-                ada_keyword = any(kw in kal_lower for kw in expanded_kw)
+                sem_score = hitung_skor_semantik_kalimat(kal, expanded_kw)
                 ada_angka = bool(re.search(r'\b(1[0-9]{3}|20[0-9]{2})\b', kal))
                 
-                if ada_keyword or ada_angka:
+                # Lolos jika skor semantik >= 1 atau memuat tahun/angka penting
+                if sem_score >= 1 or ada_angka:
                     for ac in pecah_menjadi_atomic_claims(kal):
                         if ac not in claims:
                             claims.append(ac)
@@ -265,6 +274,7 @@ def proses_peneliti_python(url, kata_kunci, source_id):
                 events.extend(parsing_temporal_lanjutan(kal))
                 causal_list.extend(parsing_causal_relations(kal))
                 
+        # Safe fallback: Jika claims kosong, jangan buang artikel! Ambil paragraf teratas
         if not claims and paragraf:
             for p in paragraf[:5]:
                 for ac in pecah_menjadi_atomic_claims(p):
