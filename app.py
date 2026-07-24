@@ -1,130 +1,83 @@
 import streamlit as st
-from duckduckgo_search import DDGS
-import trafilatura
-from deep_translator import GoogleTranslator
-from huggingface_hub import InferenceClient
+import requests
+from bs4 import BeautifulSoup
 
-# Konfigurasi Halaman Streamlit
-st.set_page_config(
-    page_title="AI Web Research Assistant",
-    page_icon="🔍",
-    layout="wide"
-)
+# --- 1. FUNGSI PENCARIAN GOOGLE ---
+def cari_di_google(kata_kunci, api_key):
+    url = "https://google.serper.dev/search"
+    payload = {"q": kata_kunci, "gl": "id", "hl": "id"}
+    headers = {
+        'X-API-KEY': api_key,
+        'Content-Type': 'application/json'
+    }
+    response = requests.post(url, headers=headers, json=payload)
+    
+    if response.status_code == 200:
+        data = response.json()
+        links = [result['link'] for result in data.get('organic', [])[:3]]
+        return links
+    return []
 
-# Inisialisasi Model AI (Mistral-7B via Serverless API)
-@st.cache_resource
-def get_llm_client():
-    return InferenceClient("mistralai/Mistral-7B-Instruct-v0.2")
-
-client = get_llm_client()
-
-# --- FUNGSI UTAMA ---
-def search_web(query, max_results=3):
-    """Mencari URL berita/artikel dari DuckDuckGo"""
-    urls = []
+# --- 2. FUNGSI EKSTRAKSI TEKS ---
+def ambil_teks_artikel(url):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-            for r in results:
-                urls.append({
-                    "title": r.get("title", "Artikel Web"),
-                    "url": r.get("href", "")
-                })
-    except Exception as e:
-        st.error(f"Gagal mencari di web: {e}")
-    return urls
-
-def scrape_content(url):
-    """Mengekstrak teks bersih dari web"""
-    try:
-        downloaded = trafilatura.fetch_url(url)
-        if downloaded:
-            text = trafilatura.extract(downloaded)
-            return text if text else ""
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        for elemen in soup(['script', 'style', 'header', 'footer', 'nav', 'aside', 'form']):
+            elemen.decompose()
+            
+        paragraf = [p.get_text() for p in soup.find_all('p') if len(p.get_text().strip()) > 30]
+        teks_bersih = " ".join(" ".join(paragraf).split())
+        return teks_bersih
     except Exception:
-        pass
-    return ""
-
-def translate_to_id(text):
-    """Menerjemahkan teks ke Bahasa Indonesia"""
-    if not text:
         return ""
-    try:
-        chunk = text[:2000]
-        return GoogleTranslator(source='auto', target='id').translate(chunk)
-    except Exception:
-        return text[:2000]
 
-# --- TAMPILAN ANTARMUKA (UI) ---
-st.title("🔍 AI Web Research Assistant")
-st.caption("Cari informasi terbaru di web, baca berbagai sumber, dan dapatkan ringkasannya secara otomatis.")
+# --- 3. ANTARMUKA STREAMLIT (UI) ---
+st.set_page_config(page_title="Pencari & Perangkum AI", page_icon="🔍")
 
-query = st.text_input(
-    "Topik / Pertanyaan Riset:", 
-    placeholder="Contoh: Bagaimana perkembangan teknologi AI tahun 2026?"
-)
+st.title("🔍 Asisten Riset Otomatis")
+st.write("Sistem ini akan mencari informasi di Google, mengambil isi artikelnya, dan menyiapkannya untuk diringkas.")
 
-if st.button("🚀 Cari & Ringkas", type="primary"):
-    if not query.strip():
-        st.warning("Silakan masukkan topik riset terlebih dahulu.")
+# Mengambil API Key dari Brankas Streamlit (Secrets)
+try:
+    SERPER_API_KEY = st.secrets["SERPER_API_KEY"]
+except KeyError:
+    st.error("⚠️ API Key tidak ditemukan! Pastikan sudah mengatur 'SERPER_API_KEY' di Streamlit Secrets.")
+    st.stop() # Hentikan program jika API Key tidak ada
+
+# Kotak Input Pengguna
+query = st.text_input("Topik apa yang ingin kamu riset hari ini?")
+
+if st.button("Mulai Riset"):
+    if query:
+        # Menampilkan animasi loading
+        with st.status("Memproses permintaanmu...", expanded=True) as status:
+            st.write("🔍 Mencari referensi terbaik di Google...")
+            daftar_link = cari_di_google(query, SERPER_API_KEY)
+            
+            if not daftar_link:
+                status.update(label="Pencarian gagal atau tidak ada hasil.", state="error")
+                st.stop()
+                
+            st.write(f"✅ Ditemukan {len(daftar_link)} referensi utama.")
+            
+            kumpulan_teks = ""
+            for i, link in enumerate(daftar_link):
+                st.write(f"📥 Membaca artikel {i+1}...")
+                teks = ambil_teks_artikel(link)
+                if teks:
+                    # Kita batasi 1000 karakter per artikel agar tidak membebani memori
+                    kumpulan_teks += f"Sumber: {link}\n{teks[:1000]}...\n\n"
+            
+            status.update(label="Ekstraksi selesai!", state="complete", expanded=False)
+        
+        # Menampilkan Hasil
+        st.subheader("📑 Teks yang Berhasil Diekstrak")
+        st.text_area("Teks ini siap dikirim ke AI untuk diringkas:", value=kumpulan_teks, height=300)
+        
+        st.info("💡 Tahap selanjutnya: Menghubungkan teks di atas dengan API Kecerdasan Buatan (AI) untuk membuat ringkasan otomatis.")
+        
     else:
-        with st.status("🔍 Sedang mencari dan menganalisis artikel...", expanded=True) as status:
-            st.write("1️⃣ Mencari sumber informasi di internet...")
-            search_results = search_web(query, max_results=3)
-
-            if not search_results:
-                status.update(label="❌ Artikel tidak ditemukan.", state="error")
-            else:
-                scraped_texts = []
-                sources_list = []
-
-                st.write("2️⃣ Membaca dan menerjemahkan isi artikel...")
-                for idx, item in enumerate(search_results, 1):
-                    url = item['url']
-                    title = item['title']
-                    content = scrape_content(url)
-                    
-                    if content:
-                        translated_text = translate_to_id(content)
-                        scraped_texts.append(f"--- Sumber {idx}: {title} ---\n{translated_text}\n")
-                        sources_list.append(f"{idx}. [{title}]({url})")
-
-                if not scraped_texts:
-                    status.update(label="❌ Gagal mengekstrak isi teks dari web.", state="error")
-                else:
-                    st.write("3️⃣ Menyusun ringkasan dengan AI...")
-                    combined_context = "\n".join(scraped_texts)[:6000]
-
-                    prompt = f"""<s>[INST] Kamu adalah AI Web Research Assistant profesional. 
-Berdasarkan teks artikel di bawah ini, buatlah ringkasan terstruktur dalam Bahasa Indonesia.
-
-Format Balasan:
-### 📝 Ringkasan Utama
-(Paragraf ringkasan yang padat dan informatif)
-
-### 📌 Poin-Poin Penting
-- (Poin penting 1)
-- (Poin penting 2)
-- (Poin penting 3)
-
-Teks Sumber Artikel:
-{combined_context} [/INST]"""
-
-                    try:
-                        response = client.text_generation(prompt, max_new_tokens=800, temperature=0.3)
-                        status.update(label="✅ Riset Selesai!", state="complete", expanded=False)
-
-                        # Menampilkan Hasil
-                        col_summary, col_sources = st.columns([2, 1])
-
-                        with col_summary:
-                            st.markdown("### 📊 Hasil Ringkasan AI")
-                            st.markdown(response.strip())
-
-                        with col_sources:
-                            st.markdown("### 🔗 Sumber Artikel")
-                            for src in sources_list:
-                                st.markdown(src)
-
-                    except Exception as e:
-                        status.update(label=f"❌ Error AI: {e}", state="error")
+        st.warning("Masukkan topik pencarian terlebih dahulu!")
