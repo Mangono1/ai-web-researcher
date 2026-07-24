@@ -1,7 +1,7 @@
 import streamlit as st
 from google import genai
 
-# Daftar model Gemini yang dicoba secara berurutan (Mekanisme Fallback Otomatis)
+# Daftar model Gemini dengan mekanisme Fallback Otomatis
 DAFTAR_MODEL_GEMINI = [
     'gemini-2.5-flash',
     'gemini-2.0-flash',
@@ -10,10 +10,7 @@ DAFTAR_MODEL_GEMINI = [
 ]
 
 def panggil_gemini(prompt_teks):
-    """
-    Fungsi pusat pemanggilan Gemini AI dengan sistem fallback otomatis 
-    untuk mencegah error 404 NOT_FOUND.
-    """
+    """Fungsi pusat pemanggilan Gemini AI dengan sistem fallback otomatis."""
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         client = genai.Client(api_key=api_key)
@@ -27,7 +24,6 @@ def panggil_gemini(prompt_teks):
                 if response and response.text:
                     return response.text, nama_model
             except Exception:
-                # Jika model gagal/404, lanjutkan ke model berikutnya di dalam daftar
                 continue
                 
         return "⚠️ Semua model Gemini sedang tidak tersedia atau kuota habis.", None
@@ -35,6 +31,17 @@ def panggil_gemini(prompt_teks):
         return "⚠️ GEMINI_API_KEY belum diatur di Streamlit Secrets.", None
     except Exception as e:
         return f"Terjadi kesalahan koneksi AI: {e}", None
+
+def dapatkan_sinonim_ai(kata_kunci):
+    """
+    Dynamic AI Semantic Expander:
+    Meminta Gemini memberikan sinonim atau kepanjangan dari kata kunci secara otomatis.
+    """
+    prompt = f"Berikan maksimal 5 sinonim, kepanjangan, atau istilah yang sangat erat kaitannya dengan '{kata_kunci}'. Pisahkan dengan koma. Hanya berikan kata-katanya saja tanpa penjelasan apapun."
+    teks, _ = panggil_gemini(prompt)
+    if teks and not "⚠️" in teks:
+        return [s.strip().lower() for s in teks.split(',')]
+    return []
 
 def penulis_profesional_ai(planner_blueprint, causal_chains, timeline_global, global_entities, global_triples, topik, confidence):
     prompt = f"""
