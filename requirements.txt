@@ -1,5 +1,7 @@
 streamlit
 requests
 beautifulsoup4
-duckduckgo_search
+duckduckgo-search
 google-genai
+reportlab
+python-docx
