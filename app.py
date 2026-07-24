@@ -10,16 +10,11 @@ wikipedia.set_lang("id")
 # ==========================================
 def cari_di_wikipedia(kata_kunci):
     try:
-        # Cari halaman berdasarkan kata kunci (ambil 2 teratas)
         hasil_pencarian = wikipedia.search(kata_kunci, results=2)
-        
         if not hasil_pencarian:
             return None, "Topik tidak ditemukan di Wikipedia."
             
-        # Ambil halaman pertama yang paling relevan
         halaman = wikipedia.page(hasil_pencarian[0])
-        
-        # Ambil isi teks artikelnya (ambil maksimal 4000 karakter agar pas untuk AI)
         teks_artikel = halaman.content[:4000]
         url_artikel = halaman.url
         
@@ -34,9 +29,9 @@ def cari_di_wikipedia(kata_kunci):
         return None, f"Terjadi kesalahan: {e}"
 
 # ==========================================
-# 2. FUNGSI PERANGKUM AI (GEMINI)
+# 2. FUNGSI PERANGKUM DENGAN CADANGAN OTOMATIS
 # ==========================================
-def rangkum_dengan_ai(teks_kumpul, judul, topik):
+def rangkum_dengan_ai_cadangan(teks_kumpul, judul, topik):
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         client = genai.Client(api_key=api_key)
@@ -50,15 +45,35 @@ def rangkum_dengan_ai(teks_kumpul, judul, topik):
         {teks_kumpul}
         """
         
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        return response.text
+        # Daftar model prioritas (Model Utama -> Model Cadangan)
+        daftar_model = ['gemini-2.5-flash', 'gemini-3.1-flash-lite']
+        
+        respon_ai = None
+        model_digunakan = ""
+        
+        for nama_model in daftar_model:
+            try:
+                response = client.models.generate_content(
+                    model=nama_model,
+                    contents=prompt
+                )
+                if response and response.text:
+                    respon_ai = response.text
+                    model_digunakan = nama_model
+                    break
+            except Exception:
+                # Jika model pertama habis kuota / error, lanjut coba model berikutnya
+                continue
+                
+        if respon_ai:
+            return respon_ai, model_digunakan
+        else:
+            return "Semua model AI sedang sibuk atau kuota habis.", None
+
     except KeyError:
-        return "⚠️ GEMINI_API_KEY belum diatur di Streamlit Secrets."
+        return "⚠️ GEMINI_API_KEY belum diatur di Streamlit Secrets.", None
     except Exception as e:
-        return f"Terjadi kesalahan saat memanggil AI: {e}"
+        return f"Terjadi kesalahan: {e}", None
 
 # ==========================================
 # 3. TAMPILAN ANTARMUKA STREAMLIT
@@ -66,7 +81,7 @@ def rangkum_dengan_ai(teks_kumpul, judul, topik):
 st.set_page_config(page_title="Wikipedia AI Researcher", page_icon="📚")
 
 st.title("📚 Asisten Riset Wikipedia & AI")
-st.caption("Pencarian Ensiklopedia Bersih + Ringkasan Pintar Gemini")
+st.caption("Pencarian Ensiklopedia + Multi-Model AI Cadangan Otomatis")
 
 query = st.text_input("Masukkan topik yang ingin dicari (contoh: Sejarah Majapahit, BUMDes, dll):")
 
@@ -84,8 +99,11 @@ if st.button("Cari & Rangkum dari Wikipedia"):
             st.write(f"✅ Menemukan artikel: **{data_wiki['title']}**")
             st.link_button("🔗 Buka Sumber Asli di Wikipedia", data_wiki['url'])
             
-            st.write("🧠 Merangkum isi ensiklopedia dengan Gemini AI...")
-            ringkasan_ai = rangkum_dengan_ai(data_wiki['text'], data_wiki['title'], query)
+            st.write("🧠 Menghubungkan ke AI (Mencoba model utama & cadangan)...")
+            ringkasan_ai, model_sukses = rangkum_dengan_ai_cadangan(data_wiki['text'], data_wiki['title'], query)
+            
+            if model_sukses:
+                st.write(f"✨ Berhasil merangkum menggunakan model: `{model_sukses}`")
             
             status.update(label="Selesai!", state="complete", expanded=False)
             
