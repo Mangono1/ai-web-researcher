@@ -2,38 +2,104 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 
-# --- 1. FUNGSI PENCARIAN GOOGLE CUSTOM SEARCH (CSE) ---
-def cari_di_google_cse(kata_kunci, api_key, cx_id):
+# ==========================================
+# 1. FUNGSI PENCARIAN GOOGLE (CUSTOM SEARCH API)
+# ==========================================
+def cari_di_google(kata_kunci, api_key, cx_id):
     url = "https://customsearch.googleapis.com/customsearch/v1"
     params = {
         'q': kata_kunci,
         'key': api_key,
         'cx': cx_id,
+        'num': 3  # Mengambil 3 hasil teratas
     }
     
-    response = requests.get(url, params=params)
-    
-    if response.status_code == 200:
-        data = response.json()
-        # Mengambil 3 link teratas dari hasil pencarian
-        links = [item['link'] for item in data.get('items', [])[:3]]
-        return links
-    else:
-        st.error(f"Error dari Google: {response.status_code} - {response.text}")
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get('items', [])
+            links = [item['link'] for item in items]
+            return links
+        else:
+            st.error(f"Gagal mengambil dari Google CSE API (Status Code: {response.status_code})")
+            st.write(response.json())
+            return []
+    except Exception as e:
+        st.error(f"Terjadi kesalahan koneksi API: {e}")
         return []
 
-# --- KODE EKSTRAKSI TEKS TETAP SAMA ---
+# ==========================================
+# 2. FUNGSI EKSTRAKSI TEKS WEB (BEAUTIFULSOUP)
+# ==========================================
 def ambil_teks_artikel(url):
-    # ... (Gunakan fungsi ambil_teks_artikel dari kode sebelumnya) ...
-    pass
-# --- 3. ANTARMUKA STREAMLIT (UI) ---
-st.set_page_config(page_title="Pencari & Perangkum AI", page_icon="🔍")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=8)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Buang elemen HTML non-artikel/sampah
+        for elemen in soup(['script', 'style', 'header', 'footer', 'nav', 'aside', 'form']):
+            elemen.decompose()
+            
+        # Ambil teks paragraf yang panjangnya lebih dari 30 karakter
+        paragraf = [p.get_text() for p in soup.find_all('p') if len(p.get_text().strip()) > 30]
+        teks_bersih = " ".join(" ".join(paragraf).split())
+        return teks_bersih
+    except Exception:
+        return ""
+
+# ==========================================
+# 3. TAMPILAN ANTARMUKA STREAMLIT
+# ==========================================
+st.set_page_config(page_title="Asisten Riset Google", page_icon="🔍")
 
 st.title("🔍 Asisten Riset Otomatis")
-st.write("Sistem ini akan mencari informasi di Google, mengambil isi artikelnya, dan menyiapkannya untuk diringkas.")
+st.caption("Integrasi Google Custom Search Engine + Ekstraksi Teks Python")
 
-# Mengambil API Key dari Brankas Streamlit (Secrets)
+# Mengambil Kunci Rahasia dari Streamlit Secrets
 try:
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+    GOOGLE_CX_ID = st.secrets["GOOGLE_CX_ID"]
+except KeyError:
+    st.error("⚠️ API Key / CX ID belum diatur di Streamlit Secrets!")
+    st.info("Masukkan GOOGLE_API_KEY dan GOOGLE_CX_ID pada menu Advanced Settings -> Secrets di Streamlit Cloud.")
+    st.stop()
+
+# Form Input
+query = st.text_input("Masukkan topik atau pertanyaan pencarian:")
+
+if st.button("Mulai Cari & Ekstrak"):
+    if query.strip():
+        with st.status("Sedang memproses...", expanded=True) as status:
+            st.write("🔍 Menghubungi Google Custom Search Engine...")
+            links = cari_di_google(query, GOOGLE_API_KEY, GOOGLE_CX_ID)
+            
+            if not links:
+                status.update(label="Tidak ada hasil ditemukan.", state="error")
+                st.stop()
+                
+            st.write(f"✅ Berhasil menemukan {len(links)} URL artikel.")
+            
+            hasil_ekstraksi = ""
+            for idx, link in enumerate(links, 1):
+                st.write(f"📥 Mengambil isi teks dari artikel {idx}: {link}")
+                teks = ambil_teks_artikel(link)
+                if teks:
+                    hasil_ekstraksi += f"=== SUMBER {idx}: {link} ===\n"
+                    hasil_ekstraksi += f"{teks[:1200]}...\n\n"
+            
+            status.update(label="Proses ekstraksi selesai!", state="complete", expanded=False)
+            
+        if hasil_ekstraksi:
+            st.subheader("📑 Hasil Ekstraksi Teks")
+            st.text_area("Teks bersih yang siap diringkas:", value=hasil_ekstraksi, height=350)
+        else:
+            st.warning("Gagal mengambil teks dari artikel yang ditemukan.")
+    else:
+        st.warning("Ketikkan topik pencarian terlebih dahulu!")
     SERPER_API_KEY = st.secrets["SERPER_API_KEY"]
 except KeyError:
     st.error("⚠️ API Key tidak ditemukan! Pastikan sudah mengatur 'SERPER_API_KEY' di Streamlit Secrets.")
