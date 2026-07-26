@@ -26,7 +26,7 @@ def money(value: Any) -> str:
     return f"Rp {float(value or 0):,.0f}".replace(",", ".")
 
 def rows(table: str) -> list[dict]:
-    # Filter soft delete locally, avoiding a PostgREST filter compatibility issue.
+    # Filter soft delete secara lokal
     return [x for x in (supabase.table(table).select("*").execute().data or []) if x.get("deleted_at") is None]
 
 def log(text: str, table: str | None = None, record_id: str | None = None):
@@ -43,6 +43,7 @@ def soft_delete(table: str, record_id: str):
 st.sidebar.title("🏠 PPOB BUMDes")
 page = st.sidebar.radio("Menu", ("Dashboard", "Transaksi PPOB", "Deposit PPOB", "Piutang Pelanggan", "Utang Operator", "Import Excel", "Log Aktivitas"))
 
+# ==================== MENU DASHBOARD ====================
 if page == "Dashboard":
     st.title("Dashboard")
     try:
@@ -59,6 +60,7 @@ if page == "Dashboard":
         st.dataframe(pd.DataFrame(sorted(trx, key=lambda x: x["tanggal"], reverse=True)[:10]), use_container_width=True, hide_index=True)
     except Exception as e: st.error(f"Dashboard tidak dapat dimuat: {e}")
 
+# ==================== MENU TRANSAKSI PPOB ====================
 elif page == "Transaksi PPOB":
     st.title("Transaksi PPOB")
     add, view = st.tabs(("Tambah", "Daftar"))
@@ -70,19 +72,21 @@ elif page == "Transaksi PPOB":
             ket = st.text_area("Keterangan")
             save = st.form_submit_button("Simpan")
         if save:
-            if total < modal: st.error("Total bayar tidak boleh lebih kecil dari modal.")
-            else:
-                try:
-                    r = supabase.table("transaksi").insert({"tanggal": str(tanggal), "jenis": jenis, "nama": nama or None, "total_bayar": total, "modal": modal, "status": status, "keterangan": ket or None}).execute()
-                    log("Tambah transaksi", "transaksi", r.data[0]["id"] if r.data else None); st.success("Tersimpan.")
-                except Exception as e: st.error(f"Gagal: {e}")
+            try:
+                r = supabase.table("transaksi").insert({"tanggal": str(tanggal), "jenis": jenis, "nama": nama or None, "total_bayar": total, "modal": modal, "status": status, "keterangan": ket or None}).execute()
+                log("Tambah transaksi", "transaksi", r.data[0]["id"] if r.data else None)
+                st.success("Tersimpan.")
+            except Exception as e: st.error(f"Gagal: {e}")
     with view:
         data = sorted(rows("transaksi"), key=lambda x: x["tanggal"], reverse=True)
         st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
         if data:
             selected = st.selectbox("Hapus transaksi", {f"{x['tanggal']} - {x['jenis']} - {x.get('nama') or '-'}": x['id'] for x in data})
-            if st.button("Soft delete transaksi"): soft_delete("transaksi", selected); st.rerun()
+            if st.button("Soft delete transaksi"): 
+                soft_delete("transaksi", selected)
+                st.rerun()
 
+# ==================== MENU DEPOSIT PPOB ====================
 elif page == "Deposit PPOB":
     st.title("Deposit PPOB")
     with st.form("dep", clear_on_submit=True):
@@ -91,10 +95,12 @@ elif page == "Deposit PPOB":
         with b: nominal = st.number_input("Nominal", min_value=0.0, step=10000.0); ket = st.text_input("Keterangan")
         save = st.form_submit_button("Simpan deposit")
     if save:
-        try: supabase.table("deposit").insert({"tanggal": str(tanggal), "jenis": jenis, "nominal": nominal, "keterangan": ket or None}).execute(); log("Tambah deposit", "deposit"); st.success("Tersimpan.")
+        try: 
+            supabase.table("deposit").insert({"tanggal": str(tanggal), "jenis": jenis, "nominal": nominal, "keterangan": ket or None}).execute()
+            log("Tambah deposit", "deposit")
+            st.success("Tersimpan.")
         except Exception as e: st.error(f"Gagal: {e}")
     
-    # Menampilkan data deposit & pilihan Soft Delete
     data_dep = sorted(rows("deposit"), key=lambda x: x["tanggal"], reverse=True)
     st.dataframe(pd.DataFrame(data_dep), use_container_width=True, hide_index=True)
     if data_dep:
@@ -107,12 +113,14 @@ elif page == "Deposit PPOB":
             soft_delete("deposit", selected_dep)
             st.rerun()
 
+# ==================== MENU PIUTANG PELANGGAN ====================
 elif page == "Piutang Pelanggan":
     st.title("Piutang Pelanggan")
     data = [x for x in rows("transaksi") if x["status"] == "Belum Dibayar"]
     st.metric("Total piutang", money(sum(float(x["total_bayar"]) for x in data)))
     st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
 
+# ==================== MENU UTANG OPERATOR ====================
 elif page == "Utang Operator":
     st.title("Utang Operator")
     with st.form("debt", clear_on_submit=True):
@@ -121,10 +129,12 @@ elif page == "Utang Operator":
     if save:
         if dibayar > nominal: st.error("Dibayar tidak boleh melebihi nominal.")
         else:
-            try: supabase.table("utang_operator").insert({"tanggal": str(tanggal), "nominal": nominal, "dibayar": dibayar, "status": "Lunas" if dibayar == nominal else "Belum Lunas", "keterangan": ket or None}).execute(); log("Tambah utang operator", "utang_operator"); st.success("Tersimpan.")
+            try: 
+                supabase.table("utang_operator").insert({"tanggal": str(tanggal), "nominal": nominal, "dibayar": dibayar, "status": "Lunas" if dibayar == nominal else "Belum Lunas", "keterangan": ket or None}).execute()
+                log("Tambah utang operator", "utang_operator")
+                st.success("Tersimpan.")
             except Exception as e: st.error(f"Gagal: {e}")
             
-    # Menampilkan data utang operator & pilihan Soft Delete
     data_debt = rows("utang_operator")
     st.dataframe(pd.DataFrame(data_debt), use_container_width=True, hide_index=True)
     if data_debt:
@@ -137,11 +147,12 @@ elif page == "Utang Operator":
             soft_delete("utang_operator", selected_debt)
             st.rerun()
 
+# ==================== MENU IMPORT EXCEL ====================
 elif page == "Import Excel":
     st.title("Import Excel")
     st.write("Unduh template di bawah ini jika Anda belum memiliki format filenya.")
 
-    # --- 1. FUNGSI MEMBUAT TEMPLATE EXCEL (2 SHEET) ---
+    # 1. Fungsi Pembuat Template Excel (2 Sheet)
     def generate_excel_template():
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -197,7 +208,7 @@ elif page == "Import Excel":
         output.seek(0)
         return output
 
-    # --- 2. TOMBOL DOWNLOAD TEMPLATE ---
+    # 2. Tombol Download Template
     st.download_button(
         label="📥 Download Template Excel (.xlsx)",
         data=generate_excel_template(),
@@ -207,7 +218,7 @@ elif page == "Import Excel":
 
     st.divider()
 
-    # --- 3. PROSES IMPORT FILE EXCEL ---
+    # 3. Proses Upload & Import File Excel
     file = st.file_uploader("Pilih file .xlsx yang akan diimpor", type="xlsx")
     if file:
         raw = pd.read_excel(file, sheet_name=0) 
@@ -236,10 +247,11 @@ elif page == "Import Excel":
                 a = pd.to_numeric(x[total], errors="coerce")
                 b = pd.to_numeric(x[modal], errors="coerce")
 
-                if pd.isna(dt) or pd.isna(a) or pd.isna(b) or a < 0 or b < 0 or a < b:
+                # Memastikan tanggal & angka valid (tidak kosong atau bernilai minus)
+                if pd.isna(dt) or pd.isna(a) or pd.isna(b) or a < 0 or b < 0:
                     errors.append({
                         "baris": i + 2,
-                        "error": "Tanggal/angka tidak valid atau Total Bayar < Modal"
+                        "error": "Tanggal atau angka tidak valid (Kosong atau nilai minus)"
                     })
                 else:
                     valid.append({
@@ -269,6 +281,7 @@ elif page == "Import Excel":
                 except Exception as e:
                     st.error(f"Import gagal ke database: {e}")
 
+# ==================== MENU LOG AKTIVITAS ====================
 else:
     st.title("Log Aktivitas")
     st.dataframe(pd.DataFrame(supabase.table("log_aktivitas").select("*").order("waktu", desc=True).execute().data or []), use_container_width=True, hide_index=True)
