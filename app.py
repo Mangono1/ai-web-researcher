@@ -169,7 +169,7 @@ elif page == "Import Excel":
                     "Tanggal": "2026-07-26",
                     "Jenis Transaksi": "Pulsa",
                     "Nama Pelanggan": "Siti Aminah",
-                    "Total Bayar": 12000,
+                    "Total Bayar": 0,
                     "Modal": 10500
                 }
             ])
@@ -195,7 +195,7 @@ elif page == "Import Excel":
                 {
                     "Nama Kolom": "Total Bayar",
                     "Format Data": "Angka Murni",
-                    "Aturan & Keterangan": "Angka saja. JANGAN pakai 'Rp', titik, atau koma (Contoh: 52000)."
+                    "Aturan & Keterangan": "Isi 0 jika pelanggan berhutang (Piutang). JANGAN pakai 'Rp', titik, atau koma."
                 },
                 {
                     "Nama Kolom": "Modal",
@@ -236,7 +236,6 @@ elif page == "Import Excel":
             total = st.selectbox("Kolom Total Bayar", cols)
         with c3:
             modal = st.selectbox("Kolom Modal", cols)
-            default = st.selectbox("Status Pembayaran Default", STATUSES)
 
         if st.button("Validasi & Import Data"):
             valid = []
@@ -251,20 +250,26 @@ elif page == "Import Excel":
                 if pd.isna(dt) or pd.isna(a) or pd.isna(b) or a < 0 or b < 0:
                     errors.append({
                         "baris": i + 2,
-                        "error": "Tanggal atau angka tidak valid (Kosong atau nilai minus)"
+                        "error": "Tanggal/angka rusak (Kemungkinan baris Excel terpotong)"
                     })
                 else:
+                    # Sistem Pintar Status: Jika bayar 0, otomatis "Belum Dibayar" (Piutang)
+                    if a == 0:
+                        status_otomatis = "Belum Dibayar"
+                    else:
+                        status_otomatis = "Lunas"
+
                     valid.append({
                         "tanggal": dt.date().isoformat(),
                         "jenis": str(x[j]),
                         "nama": None if pd.isna(x[n]) else str(x[n]),
                         "total_bayar": float(a),
                         "modal": float(b),
-                        "status": default
+                        "status": status_otomatis
                     })
 
             if errors:
-                st.error(f"Ditemukan {len(errors)} baris bermasalah:")
+                st.error(f"Ditemukan {len(errors)} baris bermasalah (Perbaiki file Excel lalu upload ulang):")
                 st.dataframe(pd.DataFrame(errors), hide_index=True)
 
             if valid:
