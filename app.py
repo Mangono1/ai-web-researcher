@@ -93,7 +93,19 @@ elif page == "Deposit PPOB":
     if save:
         try: supabase.table("deposit").insert({"tanggal": str(tanggal), "jenis": jenis, "nominal": nominal, "keterangan": ket or None}).execute(); log("Tambah deposit", "deposit"); st.success("Tersimpan.")
         except Exception as e: st.error(f"Gagal: {e}")
-    st.dataframe(pd.DataFrame(sorted(rows("deposit"), key=lambda x: x["tanggal"], reverse=True)), use_container_width=True, hide_index=True)
+    
+    # Menampilkan data deposit & pilihan Soft Delete
+    data_dep = sorted(rows("deposit"), key=lambda x: x["tanggal"], reverse=True)
+    st.dataframe(pd.DataFrame(data_dep), use_container_width=True, hide_index=True)
+    if data_dep:
+        selected_dep = st.selectbox(
+            "Hapus data deposit",
+            {f"{x['tanggal']} - {x['jenis']} - {money(x.get('nominal'))} ({x.get('keterangan') or '-'})": x['id'] for x in data_dep},
+            key="del_dep"
+        )
+        if st.button("Soft delete deposit"):
+            soft_delete("deposit", selected_dep)
+            st.rerun()
 
 elif page == "Piutang Pelanggan":
     st.title("Piutang Pelanggan")
@@ -111,7 +123,19 @@ elif page == "Utang Operator":
         else:
             try: supabase.table("utang_operator").insert({"tanggal": str(tanggal), "nominal": nominal, "dibayar": dibayar, "status": "Lunas" if dibayar == nominal else "Belum Lunas", "keterangan": ket or None}).execute(); log("Tambah utang operator", "utang_operator"); st.success("Tersimpan.")
             except Exception as e: st.error(f"Gagal: {e}")
-    st.dataframe(pd.DataFrame(rows("utang_operator")), use_container_width=True, hide_index=True)
+            
+    # Menampilkan data utang operator & pilihan Soft Delete
+    data_debt = rows("utang_operator")
+    st.dataframe(pd.DataFrame(data_debt), use_container_width=True, hide_index=True)
+    if data_debt:
+        selected_debt = st.selectbox(
+            "Hapus data utang operator",
+            {f"{x['tanggal']} - Nominal: {money(x.get('nominal'))} ({x.get('keterangan') or '-'})": x['id'] for x in data_debt},
+            key="del_debt"
+        )
+        if st.button("Soft delete utang operator"):
+            soft_delete("utang_operator", selected_debt)
+            st.rerun()
 
 elif page == "Import Excel":
     st.title("Import Excel")
@@ -186,7 +210,6 @@ elif page == "Import Excel":
     # --- 3. PROSES IMPORT FILE EXCEL ---
     file = st.file_uploader("Pilih file .xlsx yang akan diimpor", type="xlsx")
     if file:
-        # sheet_name=0 memastikan hanya Sheet 1 yang dibaca oleh sistem
         raw = pd.read_excel(file, sheet_name=0) 
         st.subheader("Pratinjau Data (Sheet 1)")
         st.dataframe(raw.head(), use_container_width=True)
@@ -215,7 +238,7 @@ elif page == "Import Excel":
 
                 if pd.isna(dt) or pd.isna(a) or pd.isna(b) or a < 0 or b < 0 or a < b:
                     errors.append({
-                        "baris": i + 2, # +2 menyesuaikan header row di Excel
+                        "baris": i + 2,
                         "error": "Tanggal/angka tidak valid atau Total Bayar < Modal"
                     })
                 else:
